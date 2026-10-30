@@ -31,9 +31,26 @@ test -s "$TMP"
 EPD="$HERE/experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch"
 FIX="$HERE/experiments/0051-busy-telemetry-reset-order.patch"
 
+is_applied() {
+  file="$1"; label="$2"
+  if git -C "$QEMU_ROOT" apply --reverse --check "$file" 2>/dev/null; then
+    return 0
+  fi
+  # 0051 rewrites the same 0037 hunks, so 0037 cannot reverse on its own once
+  # the fix is present. Treat it as applied when the telemetry fields exist and
+  # the follow-up patch reverses cleanly.
+  case "$label" in
+    0037-*)
+      grep -q 'busy_rise_edges' "$QEMU_ROOT/hw/display/ybx_ssd1677.c" &&
+        git -C "$QEMU_ROOT" apply --reverse --check "$FIX" 2>/dev/null
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 for entry in "$TMP:0043-crosscore-IPI" "$EPD:0037-EPD-BUSY" "$FIX:0051-EPD-BUSY-reset-order"; do
   file="${entry%:*}"; label="${entry##*:}"
-  if git -C "$QEMU_ROOT" apply --reverse --check "$file" 2>/dev/null; then
+  if is_applied "$file" "$label"; then
     echo "Already applied: ${label}"
   elif git -C "$QEMU_ROOT" apply --check "$file"; then
     if [ "$MODE" = "--apply" ]; then
