@@ -33,10 +33,12 @@ Characterisations (tests, not fixes):
     already cancels the in-flight refresh timer, so an aborted refresh cannot
     emit a stale completion IRQ later; the only residue is one *real* fall edge,
     and EpdBus.cpp:437 drains that token before the next wait.
-  * test_0037_epd_reset_clears_counters_before_releasing_busy — the one defect
-    in experiments/0037: its counter clear lands before epd_set_busy(s, false),
-    so a system_reset inside a BUSY-high window yields fall_edges=1,
-    rise_edges=0 and busy_high_ms == full VM uptime.
+  * test_epd_reset_clears_counters_after_releasing_busy — 0037 as authored
+    cleared the counters before epd_set_busy(s, false), so a system_reset
+    inside a BUSY-high window yielded fall_edges=1, rise_edges=0 and
+    busy_high_ms == full VM uptime. Patch 0051 moves the clear after the
+    release; this test pins the fixed ordering, and
+    probe_x4pro_telemetry_qtest.py reproduces it against the compiled binary.
   * test_shipped_model_asserts_no_busy_on_reset — model fidelity gap: real
     SSD1677 panels assert BUSY around a hardware reset (Ssd1677Driver.cpp:385-388
     says Active-high BUSY may not have asserted by the first sample), the QEMU
@@ -168,24 +170,22 @@ class Panel:
         self.rise_edges = self.fall_edges = self.busy_high_ms = 0
         self.busy_started_ms = 0
 
-    def device_reset(self, fix_reset_order=False):
-        """epd_reset():211-225.
+    def device_reset(self):
+        """epd_reset():211-225 with patch 0051 ordering.
 
-        experiments/0037 puts the telemetry clear right after `update_ctrl2 = 0`
-        (patch hunk @@ -217,6 +237,8 @@), i.e. *before* timer_del + release. The
-        fix under test keeps every other line and clears last.
+        The telemetry counters are cleared after the pending window and BUSY are
+        released; clearing first would count the reset-driven fall without its
+        rise and add the whole VM uptime to busy_high_ms.
         """
         self.frames = self.commands = 0
         self.ignored_bytes = 0
         self.update_ctrl2 = 0
-        if self.telemetry and not fix_reset_order:
-            self._clear_counters()
         self.command = 0
         self.dc_high = True
         self.rst_high = True
         self._pending = None
         self.set_busy(0)
-        if self.telemetry and fix_reset_order:
+        if self.telemetry:
             self._clear_counters()
 
 
@@ -574,35 +574,31 @@ class EpdLifecycleTests(unittest.TestCase):
         self.assertEqual((panel.rise_edges, panel.fall_edges), (4, 4))
         self.assertEqual(panel.busy_high_ms, 750 + 10)
 
-    def test_0037_epd_reset_clears_counters_before_releasing_busy(self):
-        """Defect: hunk @@ -217,6 +237,8 @@ runs before epd_set_busy(s, false)."""
-        # as-authored
+    def test_epd_reset_clears_counters_after_releasing_busy(self):
+        """Patch 0051: a reset inside a BUSY-high window leaves no phantom fall."""
         panel, gpio, drv = self.new_env(telemetry=True)
         self.assertTrue(drv.begin())
+        panel.advance(500)                 # keep the VM clock away from zero
         panel.ctrl2(0xF7)
         panel.cmd(0x20)                    # rise at now, busy_started_ms = now
         panel.advance(120)
-        started = panel.busy_started_ms
+        self.assertEqual((panel.rise_edges, panel.fall_edges), (1, 0))
         panel.device_reset()               # e.g. system_reset from /api/reboot
-        self.assertEqual(
-            (panel.rise_edges, panel.fall_edges), (0, 1),
-            "the reset-driven release is counted but its rise was just erased")
-        self.assertEqual(
-            panel.busy_high_ms, panel.now,
-            "busy_high_ms is now now-busy_started_ms(0) == full VM uptime")
-        self.assertGreater(panel.busy_high_ms, panel.now - started)
-
-        # one-line fix: clear the counters after releasing BUSY
-        panel, gpio, drv = self.new_env(telemetry=True)
-        self.assertTrue(drv.begin())
-        panel.ctrl2(0xF7)
-        panel.cmd(0x20)
-        panel.advance(120)
-        panel.device_reset(fix_reset_order=True)
         self.assertEqual((panel.rise_edges, panel.fall_edges,
                           panel.busy_high_ms, panel.busy_started_ms), (0, 0, 0, 0))
         self.assertEqual(panel.busy_level, 0)
         self.assertEqual(gpio.irq_level, 0)
+
+    def test_idle_reset_also_zeroes_telemetry(self):
+        panel, gpio, drv = self.new_env(telemetry=True)
+        self.assertTrue(drv.begin())
+        panel.ctrl2(0xF7)
+        panel.cmd(0x20)
+        panel.advance(351)                 # normal completion
+        self.assertEqual((panel.rise_edges, panel.fall_edges), (1, 1))
+        panel.device_reset()
+        self.assertEqual((panel.rise_edges, panel.fall_edges,
+                          panel.busy_high_ms, panel.busy_started_ms), (0, 0, 0, 0))
 
     def test_epd_and_gpio_reset_ordering_does_not_fabricate_an_irq(self):
         """system_reset hits both devices; either order must end with GPIO6 quiet."""

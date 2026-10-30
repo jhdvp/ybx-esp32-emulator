@@ -11,8 +11,8 @@
 ![Platform](https://img.shields.io/badge/host-macOS%20%2B%20Docker-586D70?style=flat-square)
 ![Guest](https://img.shields.io/badge/guest-ESP32--S3%20%2F%20ESP32--C3-567965?style=flat-square)
 [![Host checks](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml/badge.svg)](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml)
-![Tests](https://img.shields.io/badge/local%20tests-279%20pass%20%7C%207%20skip-567965?style=flat-square)
-![License](https://img.shields.io/badge/license-under%20review-777777?style=flat-square)
+![Tests](https://img.shields.io/badge/local%20tests-280%20pass%20%7C%207%20skip-567965?style=flat-square)
+[![License](https://img.shields.io/badge/license-MIT%20%2B%20GPL--2.0%20patches-567965?style=flat-square)](LICENSING.md)
 
 [**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap)
 
@@ -46,7 +46,7 @@
 | ESP32-C3 RISC-V | 🟡 **Partial** | Real ROM/boot/application execution verified; peripheral coverage is incomplete |
 | SSD1677 E-Ink 800 × 480 | 🟢 **Working (basic)** | Actual framebuffer writes, 480 × 800 oriented PNG capture and screen transitions |
 | GT911 touch controller | 🟢 **Working (basic)** | Virtual touch/release through QMP; factory UI reacts to real guest events |
-| GPIO6 / panel BUSY / IRQ | 🟡 **Instrumented** | CPU interrupt routing works; BUSY measurements need reset-order correction |
+| GPIO6 / panel BUSY / IRQ | 🟢 **Working (instrumented)** | CPU interrupt routing, BUSY edge/duration counters; reset-order defect fixed and re-verified on factory firmware ([0051](tools/ybx-system-emu/experiments/0051-busy-telemetry-reset-verification-20261030.md)) |
 | SDMMC / FAT media | 🟡 **Partial** | SDMMC DMA reads and selected FAT image workflows verified; not full card parity |
 | Browser interface | 🟢 **Working** | Live display, touch injection, reset, QEMU crash recovery |
 | Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Real radio register windows and interrupt/device semantics are missing |
@@ -54,7 +54,7 @@
 | Power / sleep / waveform timing | 🟡 **Experimental** | Host lifecycle models and telemetry, not physical E-Ink fidelity |
 | X3 / X4 / other panels | 🟡 **Early bring-up** | CPU milestones exist; full interactive device coverage is not claimed |
 
-**Evidence:** standalone run: 286 tests (279 passed, 7 skipped). With the companion CrossPoint firmware source tree: 310 tests (304 passed, 6 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status.
+**Evidence:** standalone run: 287 tests (280 passed, 7 skipped). With the companion CrossPoint firmware source tree: 311 tests (305 passed, 6 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status.
 
 ## How it works
 
@@ -142,7 +142,7 @@ tools/ybx-system-emu/
 - [x] Home → More → YBX Settings → System Settings → Back acceptance evidence
 - [x] Browser process recovery and typed HTTP failures
 - [x] Wi-Fi capability gap analysis, FreeRTOS and BUSY/IRQ investigations
-- [ ] Fix BUSY telemetry reset ordering and verify in rebuilt QEMU
+- [x] Fix BUSY telemetry reset ordering and verify in rebuilt QEMU
 - [ ] Make patched QEMU reproducible from a clean checkout and publish build verification
 - [ ] Add proper ESP32-S3 Wi-Fi radio/MAC support and isolated connection testing
 - [ ] Expand SSD1677 waveform, sleep/reset and power correctness
@@ -151,7 +151,9 @@ tools/ybx-system-emu/
 
 ## Safety, provenance & scope
 
-This repository contains **host-side tooling, tests, QEMU patch proposals and evidence**, not a bundled ESP32 factory image, device keys, cloud passwords or a prebuilt QEMU executable. Use an isolated guest network unless testing a controlled service. LAN HTTP control has no authentication: do not publish ports to the internet. QEMU itself is an upstream project with its own licensing and attribution; applicable licensing of our extracted tooling and QEMU-derived patches is being reviewed before release packaging.
+This repository contains **host-side tooling, tests, QEMU patch proposals and evidence**, not a bundled ESP32 factory image, device keys, cloud passwords or a prebuilt QEMU executable. Use an isolated guest network unless testing a controlled service. LAN HTTP control has no authentication: do not publish ports to the internet.
+
+The original host tooling, tests, documentation and artwork are **MIT-licensed** ([`LICENSE`](LICENSE)). QEMU-derived patch files under `patches/` and `experiments/*.patch` are derivative works of QEMU and remain **GPL-2.0**; no QEMU source or binary is redistributed. Read [`LICENSING.md`](LICENSING.md) before reusing a patch.
 
 The emulator originated as the system-emulation lab for [YBX CrossPoint firmware](https://github.com/jhdvp/ybx-crosspoint), but **is now developed as a separate project**. Firmware, plugin work and the emulation platform follow independent development tracks.
 

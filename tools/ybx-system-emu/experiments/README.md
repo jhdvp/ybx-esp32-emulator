@@ -411,3 +411,15 @@ measured from genuine guest captures, never from a web mock. The live
 multi-step guest run was NOT executed here; More → Settings and the back
 tap remain proven only through the shared browser `/api/tap` artifacts of
 0043, which lack per-step I2C and refresh counters.
+
+## 0051 — BUSY telemetry reset-order fix, rebuilt and re-verified
+
+0037's counter clear ran before `epd_set_busy(s, false)` in `epd_reset()`, so a
+`system_reset` inside a BUSY-high window recorded a fall whose rise had just
+been erased and set `busy-high-ms` to the whole VM uptime. Reproduced on the
+compiled binary (`rise=0, fall=1, high_ms=620` at a 620 ms VM clock), fixed by
+`0051-busy-telemetry-reset-order.patch` (clear after the release; correct the
+GPIO6 pullup comment), rebuilt and re-tested (`0, 0, 0`). Factory guest
+Home → More → YBX Settings → System settings → Back still matches the accepted
+frame SHAs. Details and evidence:
+`0051-busy-telemetry-reset-verification-20261030.md`.

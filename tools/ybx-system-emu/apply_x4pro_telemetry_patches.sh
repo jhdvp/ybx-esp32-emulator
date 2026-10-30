@@ -29,9 +29,10 @@ trap 'rm -f "$TMP"' EXIT HUP INT TERM
 sed -n '/^diff --git /,$p' "$HERE/experiments/0043-s3-optin-crosscore-ipi-counters.patch" > "$TMP"
 test -s "$TMP"
 EPD="$HERE/experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch"
+FIX="$HERE/experiments/0051-busy-telemetry-reset-order.patch"
 
-for file in "$TMP" "$EPD"; do
-  if [ "$file" = "$TMP" ]; then label="0043-crosscore-IPI"; else label="0037-EPD-BUSY"; fi
+for entry in "$TMP:0043-crosscore-IPI" "$EPD:0037-EPD-BUSY" "$FIX:0051-EPD-BUSY-reset-order"; do
+  file="${entry%:*}"; label="${entry##*:}"
   if git -C "$QEMU_ROOT" apply --reverse --check "$file" 2>/dev/null; then
     echo "Already applied: ${label}"
   elif git -C "$QEMU_ROOT" apply --check "$file"; then

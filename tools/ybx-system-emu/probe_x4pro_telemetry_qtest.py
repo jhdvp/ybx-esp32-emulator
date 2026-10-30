@@ -105,14 +105,29 @@ def run(qemu, rom):
                 assert completed["busy_high_ms"] >= 350, completed
                 for key in before:
                     assert_non_decreasing(before, completed, key)
+
+                # Patch 0051: reset while BUSY is high must not record a fall
+                # whose rise was just erased, nor add the VM uptime.
+                qt.wr(GPIO + 0x0c, 1 << 13)
+                send(qt, [0x20], dc=False)
+                reset_active = read()
+                assert reset_active["busy_rise"] > completed["busy_rise"], reset_active
+                qt.tick(120_000_000)
+                qmp("system_reset")
+                after_reset = read()
+                assert (after_reset["busy_rise"], after_reset["busy_fall"],
+                        after_reset["busy_high_ms"]) == (0, 0, 0), after_reset
+
                 return {
                     "qtest_ipi_delivered": True,
                     "qtest_ipi_unrouted_detected": True,
                     "qtest_epd_busy_rise_and_fall": True,
+                    "qtest_busy_reset_counters_cleared": True,
                     "qtest_busy_high_ms": completed["busy_high_ms"],
                     "native_guest_navigation_verified": False,
                     "before": before, "after_routed": routed,
                     "after_unrouted": unrouted, "after_busy": completed,
+                    "after_reset": after_reset,
                     "qtest_mmio_commands": qt.commands,
                 }
             finally:

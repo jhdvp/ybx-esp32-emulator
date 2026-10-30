@@ -1,0 +1,32 @@
+diff --git a/hw/display/ybx_ssd1677.c b/hw/display/ybx_ssd1677.c
+--- a/hw/display/ybx_ssd1677.c
++++ b/hw/display/ybx_ssd1677.c
+@@ -29,8 +29,8 @@
+         }
+     }
+     s->busy_level = busy;
+-    /* Always drive: GPIO6 may be parked high by a board pullup while the model
+-     * still believes it is low, and the panel has to release it anyway. */
++    /* Drive unconditionally: the panel releases/asserts the line even when the
++     * model's previous level already matches, so the GPIO input sees it. */
+     qemu_set_irq(s->busy, busy);
+ }
+ static void epd_refresh_completed(void *opaque)
+@@ -237,13 +237,15 @@
+     s->ignored_bytes = s->last_command = s->nonwhite_visible = 0;
+     s->nonwhite_ram_writes = s->command_24_count = s->command_26_count = 0;
+     s->update_ctrl2 = 0;
+-    s->busy_rise_edges = s->busy_fall_edges = s->busy_high_ms = 0;
+-    s->busy_started_ms = 0;
+     s->command = 0;
+     s->dc_high = true;
+     s->rst_high = true;
+     timer_del(s->refresh_timer);
+     epd_set_busy(s, false);
++    /* Clear after the release, otherwise a reset while BUSY is high records a
++     * fall edge whose rise was just erased and adds the whole VM uptime. */
++    s->busy_rise_edges = s->busy_fall_edges = s->busy_high_ms = 0;
++    s->busy_started_ms = 0;
+ }
+ static void epd_realize(SSIPeripheral *peripheral, Error **errp)
+ {
