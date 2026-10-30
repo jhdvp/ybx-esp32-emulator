@@ -200,6 +200,16 @@ class RenderTaskSnapshotTests(unittest.TestCase):
                       [{"tcb": row["tcb"], "name": row["name"]}
                        for row in self.snap["tasks"]])
 
+    def test_running_render_task_is_discovered_from_px_current_tcbs(self):
+        """A task caught on a CPU is on no ready/delayed list."""
+        snap = rtos.snapshot(fake_qmp(build_image(
+            render_state_list=0, render_event_list=0,
+            current_tcb=RENDER_TCB)))
+        self.assertTrue(snap["available"], snap.get("reason"))
+        self.assertEqual(snap["render_task"]["tcb"], hex(RENDER_TCB))
+        found = {row["tcb"]: row["found_in"] for row in snap["tasks"]}
+        self.assertEqual(found[hex(RENDER_TCB)], "running-core-0")
+
     def test_blocked_queue_is_found_from_the_event_list_item(self):
         block = self.snap["render_task_block"]
         self.assertTrue(block["state_is_delayed"])

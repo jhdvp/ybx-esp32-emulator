@@ -328,7 +328,7 @@ def task_row(ram, tcb_address):
 
 
 def enumerate_tasks(ram):
-    """Every task reachable from the scheduler lists, no hardcoded TCB address."""
+    """Every task on the scheduler lists or currently running, no hardcoded TCB."""
     rows, seen = [], set()
     lists = [(f"ready-priority-{priority}",
               KERNEL["pxReadyTasksLists"] + priority * LIST_SIZE)
@@ -355,6 +355,19 @@ def enumerate_tasks(ram):
                 row["found_in"] = label
                 rows.append(row)
             nxt = ram.u32(nxt + LIST_ITEM["px_next"])
+        if len(rows) >= MAX_ENUMERATED_TASKS:
+            break
+    # A running task is on neither a ready nor a delayed list; without this it
+    # is invisible to the probe whenever the snapshot catches it on a CPU.
+    for core in range(CORES):
+        tcb = ram.u32(KERNEL["pxCurrentTCBs"] + core * 4)
+        if not _plausible_pointer(tcb) or tcb in seen:
+            continue
+        seen.add(tcb)
+        row = task_row(ram, tcb)
+        if row:
+            row["found_in"] = f"running-core-{core}"
+            rows.append(row)
         if len(rows) >= MAX_ENUMERATED_TASKS:
             break
     return rows
