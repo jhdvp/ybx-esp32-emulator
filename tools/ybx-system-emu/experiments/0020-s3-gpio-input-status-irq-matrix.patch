@@ -1,0 +1,164 @@
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -31,6 +31,12 @@
+     qemu_irq pin_out[ESP32_GPIO_PINS];
+     uint32_t input_lo;
+     uint32_t input_hi;
++    /* ESP32-S3 GPIO_INTR opt-in: 0x44/0x50 status and 0x74+n*4
++     * pin type/INT_ENA; no RTC_IO, GPIO matrix or NMI modeling. */
++    uint32_t gpio_status_lo;
++    uint32_t gpio_status_hi;
++    uint32_t pin_config[ESP32_GPIO_PINS];
++    uint32_t irq_level;
+ } Esp32GpioState;
+ 
+ typedef struct Esp32GpioClass {
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -37,6 +37,14 @@
+ #define GPIO_ENABLE1_W1TC 0x034
+ #define GPIO_IN           0x03c
+ #define GPIO_IN1          0x040
++#define GPIO_STATUS        0x044
++#define GPIO_STATUS_W1TC   0x04c
++#define GPIO_STATUS1       0x050
++#define GPIO_STATUS1_W1TC  0x058
++#define GPIO_PIN_FIRST     0x074
++#define GPIO_PIN_LAST      (GPIO_PIN_FIRST + ESP32_GPIO_PINS * 4)
++#define GPIO_PIN_INT_TYPE(v) (((v) >> 7) & 7)
++#define GPIO_PIN_INT_ENA(v)  (((v) >> 13) & 0x1f)
+ 
+ static void esp32_gpio_notify_outputs(Esp32GpioState *s)
+ {
+@@ -55,6 +63,23 @@
+     }
+ }
+ 
++static void esp32_gpio_refresh_irq(Esp32GpioState *s)
++{
++    bool asserted = false;
++    for (int n = 0; n < ESP32_GPIO_PINS; n++) {
++        uint32_t flag = (uint32_t)1 << (n < 32 ? n : n - 32);
++        bool pending = n < 32 ? !!(s->gpio_status_lo & flag)
++                               : !!(s->gpio_status_hi & flag);
++        /* INT_ENA bit0 enables CPU0 normal interrupt (ESP-IDF GPIO). */
++        if (pending && (GPIO_PIN_INT_ENA(s->pin_config[n]) & 1)) {
++            asserted = true;
++            break;
++        }
++    }
++    s->irq_level = asserted;
++    qemu_set_irq(s->irq, asserted);
++}
++
+ static void esp32_gpio_inject_input(void *opaque, int n, int level)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+@@ -63,10 +88,30 @@
+     }
+     uint32_t *word = n < 32 ? &s->input_lo : &s->input_hi;
+     uint32_t mask = 1U << (n < 32 ? n : n - 32);
++    bool old_high = !!(*word & mask);
++    bool new_high = !!level;
+     if (level) {
+         *word |= mask;
+     } else {
+         *word &= ~mask;
++    }
++    if (!s->emulate_outputs) {
++        return;
++    }
++    uint32_t cfg = s->pin_config[n];
++    uint32_t type = GPIO_PIN_INT_TYPE(cfg);
++    bool triggered = (type == 1 && !old_high && new_high) ||
++                     (type == 2 && old_high && !new_high) ||
++                     (type == 3 && old_high != new_high) ||
++                     (type == 4 && !new_high) ||
++                     (type == 5 && new_high);
++    if (triggered && GPIO_PIN_INT_ENA(cfg)) {
++        if (n < 32) {
++            s->gpio_status_lo |= mask;
++        } else {
++            s->gpio_status_hi |= mask;
++        }
++        esp32_gpio_refresh_irq(s);
+     }
+ }
+ 
+@@ -86,7 +131,14 @@
+         case GPIO_IN1:
+             return (s->out_hi & s->enable_hi) |
+                    (s->input_hi & ~s->enable_hi);
+-        default: break;
++        case GPIO_STATUS: return s->gpio_status_lo;
++        case GPIO_STATUS1: return s->gpio_status_hi;
++        default:
++            if (addr >= GPIO_PIN_FIRST && addr < GPIO_PIN_LAST &&
++                (addr & 3) == 0) {
++                return s->pin_config[(addr-GPIO_PIN_FIRST)/4];
++            }
++            break;
+         }
+     }
+     switch (addr) {
+@@ -121,7 +173,23 @@
+     case GPIO_ENABLE1: s->enable_hi = v; break;
+     case GPIO_ENABLE1_W1TS: s->enable_hi |= v; break;
+     case GPIO_ENABLE1_W1TC: s->enable_hi &= ~v; break;
+-    default: return;
++    case GPIO_STATUS_W1TC:
++        s->gpio_status_lo &= ~v;
++        esp32_gpio_refresh_irq(s);
++        return;
++    case GPIO_STATUS1_W1TC:
++        s->gpio_status_hi &= ~v;
++        esp32_gpio_refresh_irq(s);
++        return;
++    default:
++        if (addr >= GPIO_PIN_FIRST && addr < GPIO_PIN_LAST &&
++            (addr & 3) == 0) {
++            s->pin_config[(addr-GPIO_PIN_FIRST)/4] = v;
++            esp32_gpio_refresh_irq(s);
++        } else {
++            return;
++        }
++        return;
+     }
+     esp32_gpio_notify_outputs(s);
+ }
+@@ -138,6 +206,10 @@
+     s->out_lo = s->out_hi = 0;
+     s->enable_lo = s->enable_hi = 0;
+     s->input_lo = s->input_hi = 0;
++    s->gpio_status_lo = s->gpio_status_hi = 0;
++    s->irq_level = 0;
++    memset(s->pin_config, 0, sizeof(s->pin_config));
++    qemu_set_irq(s->irq, 0);
+     esp32_gpio_notify_outputs(s);
+ }
+ 
+@@ -161,6 +233,8 @@
+                              ESP32_GPIO_PINS);
+     qdev_init_gpio_in_named(DEVICE(s), esp32_gpio_inject_input,
+                             "ybx.gpio-input", ESP32_GPIO_PINS);
++    object_property_add_uint32_ptr(obj, "ybx-gpio-irq-level",
++                                   &s->irq_level, OBJ_PROP_FLAG_READ);
+ }
+ 
+ static Property esp32_gpio_properties[] = {
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -941,6 +941,10 @@
+         sysbus_realize(SYS_BUS_DEVICE(&ss->gpio), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->gpio), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
++        /* GPIO input status/interrupt enable is synthesized by the opt-in
++         * board GPIO model. Unconfigured pins never assert this line. */
++        sysbus_connect_irq(SYS_BUS_DEVICE(&ss->gpio), 0,
++                           qdev_get_gpio_in(intmatrix_dev, ETS_GPIO_INTR_SOURCE));
+         if (ss->ybx_x4pro_gt911) {
+             DeviceState *touch = DEVICE(ss->ybx_gt911);
+             qemu_irq master_line = ss->ybx_x4pro_sd_power ?

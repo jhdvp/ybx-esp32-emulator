@@ -1,0 +1,93 @@
+diff --git a/hw/i2c/ybx_x4pro_i2c.c b/hw/i2c/ybx_x4pro_i2c.c
+--- a/hw/i2c/ybx_x4pro_i2c.c
++++ b/hw/i2c/ybx_x4pro_i2c.c
+@@ -242,6 +242,12 @@
+     int64_t injected_state;
+     bool data_ready;
+     qemu_irq touch_irq;
++    /* Actual guest I2C instrumentation: QMP injection alone is not a
++     * firmware-observed touch. Read counters let tests distinguish. */
++    uint32_t status_reads;
++    uint32_t point_reads;
++    uint32_t status_clears;
++    uint32_t injected_frames;
+ };
+ 
+ static void gt911_update_irq(YbxGT911 *s)
+@@ -288,6 +294,7 @@
+     }
+     s->injected_state = state;
+     s->data_ready = true;
++    s->injected_frames++;
+     gt911_update_irq(s);
+ }
+ 
+@@ -379,6 +386,7 @@
+     case 0x8142: data = '1'; break;
+     case 0x8143: data = 0; break;
+     case 0x814e:
++        s->status_reads++;
+         data = s->data_ready ? 0x80 : 0;
+         if (s->injected_state == 1 && s->data_ready) {
+             data |= 1;
+@@ -387,7 +395,9 @@
+             data |= 0x10;
+         }
+         break;
+-    case 0x8150: data = s->injected_x & 0xff; break;
++    case 0x8150:
++        s->point_reads++;
++        data = s->injected_x & 0xff; break;
+     case 0x8151: data = (s->injected_x >> 8) & 0xff; break;
+     case 0x8152: data = s->injected_y & 0xff; break;
+     case 0x8153: data = (s->injected_y >> 8) & 0xff; break;
+@@ -410,6 +420,7 @@
+         s->address_bytes = 2;
+     } else {
+         if (s->register_ptr == 0x814e && value == 0) {
++            s->status_clears++;
+             s->data_ready = false;
+             gt911_update_irq(s);
+         }
+@@ -435,6 +446,8 @@
+     s->injected_y = 0;
+     s->injected_state = 0;
+     s->data_ready = false;
++    s->status_reads = s->point_reads = 0;
++    s->status_clears = s->injected_frames = 0;
+     I2C_SLAVE(s)->address = 0x5d;
+     gt911_update_irq(s);
+ }
+@@ -453,6 +466,14 @@
+                                     OBJ_PROP_FLAG_READWRITE);
+     object_property_add_uint32_ptr(obj, "inject-y", &s->injected_y,
+                                     OBJ_PROP_FLAG_READWRITE);
++    object_property_add_uint32_ptr(obj, "status-reads", &s->status_reads,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "point-reads", &s->point_reads,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "status-clears", &s->status_clears,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "injected-frames", &s->injected_frames,
++                                   OBJ_PROP_FLAG_READ);
+     object_property_add(obj, "inject-state", "int",
+                         gt911_touch_state_get, gt911_touch_state_set,
+                         NULL, NULL);
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -484,6 +484,14 @@
+                                   OBJECT(s->ybx_gt911), "inject-y");
+         object_property_add_alias(OBJECT(s), "ybx-touch-state",
+                                   OBJECT(s->ybx_gt911), "inject-state");
++        object_property_add_alias(OBJECT(s), "ybx-touch-status-reads",
++                                  OBJECT(s->ybx_gt911), "status-reads");
++        object_property_add_alias(OBJECT(s), "ybx-touch-point-reads",
++                                  OBJECT(s->ybx_gt911), "point-reads");
++        object_property_add_alias(OBJECT(s), "ybx-touch-status-clears",
++                                  OBJECT(s->ybx_gt911), "status-clears");
++        object_property_add_alias(OBJECT(s), "ybx-touch-injected-frames",
++                                  OBJECT(s->ybx_gt911), "injected-frames");
+     }
+ 
+     qdev_prop_set_bit(DEVICE(&s->sdmmc), "ybx-x4pro-sd-power",

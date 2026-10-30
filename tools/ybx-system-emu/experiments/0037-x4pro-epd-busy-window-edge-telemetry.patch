@@ -1,0 +1,129 @@
+diff --git a/include/hw/display/ybx_ssd1677.h b/include/hw/display/ybx_ssd1677.h
+--- a/include/hw/display/ybx_ssd1677.h
++++ b/include/hw/display/ybx_ssd1677.h
+@@ -24,6 +24,14 @@
+     uint32_t ignored_bytes;
+     uint32_t last_command;
+     uint32_t busy_level;
++    /* The guest BUSY semaphore is given once per edge: two edges per refresh. */
++    uint32_t busy_rise_edges;
++    uint32_t busy_fall_edges;
++    uint32_t busy_high_ms;
++    int64_t busy_started_ms;
++    /* Both default to the previously hard-coded 350 ms window. */
++    uint16_t busy_waveform_ms;
++    uint16_t busy_power_ms;
+     uint32_t nonwhite_visible;
+     uint32_t nonwhite_ram;
+     uint32_t nonwhite_ram_writes;
+diff --git a/hw/display/ybx_ssd1677.c b/hw/display/ybx_ssd1677.c
+--- a/hw/display/ybx_ssd1677.c
++++ b/hw/display/ybx_ssd1677.c
+@@ -14,7 +14,23 @@
+ 
+ static void epd_set_busy(YbxSSD1677State *s, bool busy)
+ {
++    bool was_high = s->busy_level != 0;
++    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
++
++    if (busy != was_high) {
++        if (busy) {
++            s->busy_rise_edges++;
++            s->busy_started_ms = now;
++        } else {
++            s->busy_fall_edges++;
++            if (now > s->busy_started_ms) {
++                s->busy_high_ms += now - s->busy_started_ms;
++            }
++        }
++    }
+     s->busy_level = busy;
++    /* Always drive: GPIO6 may be parked high by a board pullup while the model
++     * still believes it is low, and the panel has to release it anyway. */
+     qemu_set_irq(s->busy, busy);
+ }
+ static void epd_refresh_completed(void *opaque)
+@@ -153,7 +169,8 @@
+             /* 0x20 also powers ON/OFF; CTRL2 bit2 starts the
+              * actual pixel-update waveform. Do not count pure
+              * 0xC0 power-on or 0x03 power-off as displayed frames. */
+-            if (s->update_ctrl2 & 0x04) {
++            bool waveform = s->update_ctrl2 & 0x04;
++            if (waveform) {
+                 memcpy(s->visible, s->ram, YBX_EPD_SIZE);
+                 s->frames++;
+                 s->nonwhite_visible = 0;
+@@ -161,9 +178,12 @@
+                     s->nonwhite_visible += (s->visible[i] != 0xff);
+                 }
+             }
++            /* Real power/booster-only activation ramps in a few ms, a pixel
++             * waveform in hundreds. Default properties keep both at 350 ms. */
+             epd_set_busy(s, true);
+             timer_mod(s->refresh_timer,
+-                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 350);
++                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
++                      (waveform ? s->busy_waveform_ms : s->busy_power_ms));
+         }
+         return 0xff;
+     }
+@@ -217,6 +237,8 @@
+     s->ignored_bytes = s->last_command = s->nonwhite_visible = 0;
+     s->nonwhite_ram_writes = s->command_24_count = s->command_26_count = 0;
+     s->update_ctrl2 = 0;
++    s->busy_rise_edges = s->busy_fall_edges = s->busy_high_ms = 0;
++    s->busy_started_ms = 0;
+     s->command = 0;
+     s->dc_high = true;
+     s->rst_high = true;
+@@ -245,6 +267,12 @@
+                                    OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "busy-level", &s->busy_level,
+                                    OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "busy-rise-edges",
++                                   &s->busy_rise_edges, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "busy-fall-edges",
++                                   &s->busy_fall_edges, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "busy-high-ms",
++                                   &s->busy_high_ms, OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "nonwhite-visible",
+                                    &s->nonwhite_visible, OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "last-command",
+@@ -261,13 +289,21 @@
+                                    &s->update_ctrl2, OBJ_PROP_FLAG_READ);
+     object_property_add_str(obj, "visible-hex", epd_get_visible_hex, NULL);
+ }
++static Property epd_properties[] = {
++    DEFINE_PROP_UINT16("busy-waveform-ms", YbxSSD1677State, busy_waveform_ms, 350),
++    DEFINE_PROP_UINT16("busy-power-ms", YbxSSD1677State, busy_power_ms, 350),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
+ static void epd_class_init(ObjectClass *klass, void *data)
+ {
+     SSIPeripheralClass *ssc = SSI_PERIPHERAL_CLASS(klass);
++    DeviceClass *dc = DEVICE_CLASS(klass);
+     ssc->transfer = epd_transfer;
+     ssc->realize = epd_realize;
+     ssc->cs_polarity = SSI_CS_LOW;
+     device_class_set_legacy_reset(DEVICE_CLASS(klass), epd_reset);
++    device_class_set_props(dc, epd_properties);
+ }
+ static const TypeInfo epd_info = {
+     .name = TYPE_YBX_SSD1677,
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -846,6 +846,12 @@
+                          OBJECT(ss->ybx_epd), "cmd26");
+             object_property_add_alias(OBJECT(ss), "ybx-epd-update-ctrl2",
+                          OBJECT(ss->ybx_epd), "update-ctrl2");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-busy-rise-edges",
++                         OBJECT(ss->ybx_epd), "busy-rise-edges");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-busy-fall-edges",
++                         OBJECT(ss->ybx_epd), "busy-fall-edges");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-busy-high-ms",
++                         OBJECT(ss->ybx_epd), "busy-high-ms");
+         }
+     }
+ 

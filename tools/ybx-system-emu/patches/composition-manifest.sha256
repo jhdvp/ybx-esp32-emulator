@@ -1,0 +1,75 @@
+# QEMU patch composition manifest — regenerate with:
+#   python3 check_qemu_patch_composition.py record
+# Fail-closed: any unlisted or rehashed patch file rejects audit.
+[base]
+commit=febae182e132e4055529be423a818225ebddaa3a
+[chain]
+patches/0001-esp32c3-gdma-interrupt-layout.patch
+patches/0003-usb-serial-jtag-tx-ready.patch
+patches/0005-usb-serial-jtag-output.patch
+experiments/0006-s3-adc-oneshot-handshake.patch
+experiments/0007-c3-s3-i2c-master.patch
+experiments/0008-c3-adc-oneshot-handshake.patch
+experiments/0009-s3-optin-bm8563-cw2017.patch
+experiments/0010-s3-optin-gpio-output-registers.patch
+experiments/0011-s3-optin-gt911-power-gating.patch
+experiments/0012-s3-gt911-touch-injection-gpio-feedback.patch
+experiments/0013-x4pro-gt911-master-rail-gpio1.patch
+experiments/0014-x4pro-sdmmc-board-power-gate.patch
+experiments/0015-s3-optin-gpspi2-transaction-scaffold.patch
+experiments/0016-s3-x4pro-ssd1677-panel-gpio-frame.patch
+experiments/0017-ssd1677-guest-ram-telemetry.patch
+experiments/0018-ssd1677-10bit-pixel-ram-refresh-gating.patch
+experiments/0019-s3-gt911-guest-i2c-readback-counters.patch
+experiments/0023-x4pro-standalone-idle-button-pullups.patch
+experiments/0024-s3-systimer-readonly-comparator-counters.patch
+experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch
+[patches]
+905ad6078d29aca14866320f86aaf95ee2631a9aed056c18a5dc9a77af3be795  experiments/0002-s3-rom-dram-experiment.patch
+b28c0fa1fd1af8d906bf04f3e3ca62b002f71e5bfbaeae1eaa6332bd89927d5f  experiments/0004-s3-rom-initializer-trial.patch
+abcd1fa2196b7674af17f1a0c9b7280d30d28b01e1370202d9b839bec12a0bd4  experiments/0006-s3-adc-oneshot-handshake.patch
+8b060b18bf64d289e2120c57b5d695b4918653ad082c7de27598e4775ba363e0  experiments/0007-c3-s3-i2c-master.patch
+7f52519f3d1683d15041d6b86456089966f55a6c0004372c2abcbaadf38d9e75  experiments/0008-c3-adc-oneshot-handshake.patch
+bdd7f192ea201e8e4ed6ac2f05394c06aa2e53bf69d5a98c8a0c3332f9f0d61e  experiments/0009-s3-optin-bm8563-cw2017.patch
+e3700edcd47dc581220a3d3ebf63050d68e737e7a38518ee17113a5496491acc  experiments/0010-s3-optin-gpio-output-registers.patch
+22f5518f01d160d0fc546cbad2ac3fd4e4764f570f5cfe4e32816ea3d5772ddc  experiments/0011-s3-optin-gt911-power-gating.patch
+2d59dc77beba3068cc030cc50036dc2620db5205436781f84e960686c919e1e1  experiments/0012-s3-gt911-touch-injection-gpio-feedback.patch
+4616c71ead542a28be53040f5f9418c9728eef5b6780ae097202cde4b0f4c823  experiments/0013-x4pro-gt911-master-rail-gpio1.patch
+a55f4e434f1f75838036bc7bd5c38b48e809c501e6eff16465731ee05f4ff45c  experiments/0014-x4pro-sdmmc-board-power-gate.patch
+e9f153ac315d17f9984055c1fae25db136319a5f389f4a3044ca074f29bec963  experiments/0015-s3-optin-gpspi2-transaction-scaffold.patch
+40bb17940a90ba1e0dde6273071080b7e044e69a6cd80d2817a609cf92bc3f49  experiments/0016-s3-x4pro-ssd1677-panel-gpio-frame.patch
+cba2affe6f65bcd654fe44f233d1c280a75f3ffbe0955d0faf5ca86aaec57a51  experiments/0017-ssd1677-guest-ram-telemetry.patch
+9cb2904c22ce0d3b243cec47e0efca8ef2167ed2458e200b0484dda54d0019ef  experiments/0018-ssd1677-10bit-pixel-ram-refresh-gating.patch
+e3db6772df0f6897f7192ac63bf48feafe4b8e245616449d8ddf50b94d98cb66  experiments/0019-s3-gt911-guest-i2c-readback-counters.patch
+2c705f19680ad6bd886af985f64f1937c13dd9c335bd717130ed8d5d3c314305  experiments/0020-s3-gpio-input-status-irq-matrix.patch
+e2007596f7418438b586716373f2d7c9249230de9125a7052b2c8b83fd73c9b0  experiments/0021-x4pro-digital-button-pullups.patch
+7989e16cfe1b36c7e5ca3e094a293c47f3b7f7f366fbaa0cc3dd5ac61889b6b8  experiments/0022-s3-gpio-level-irq-deassert.patch
+5039adcaa59a8e0dda975bf6ac9a8abefeee717ef1798f7ed7df96409268bf04  experiments/0023-x4pro-standalone-idle-button-pullups.patch
+db0e973bea23f16f641053821e8dbada2c870fca098809fa89bdc84f5e3d5e77  experiments/0024-s3-systimer-readonly-comparator-counters.patch
+19d7036705965b20398b3714e78d6c678463e680ae024840b8507b6b2b9b5ba8  experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch
+1ed03f76f24a48fc05f8391e21fe713c2257e94b14c9d571b471df85c8cbf016  experiments/0043-s3-optin-crosscore-ipi-counters.patch
+2029f49895c873ae3164ae5766329c470f37c9a561569797f413d44ae4e0ae53  patches/0001-esp32c3-gdma-interrupt-layout.patch
+81f4e296d3e66dadc51e433067d2040c4eb97caca055567647c404f6009ceddf  patches/0003-usb-serial-jtag-tx-ready.patch
+b3f9123da0f5316d87b0da7fbb897d71dbe0467deb1380a03e84298be2a08f45  patches/0005-usb-serial-jtag-output.patch
+[sources]
+3d79dced3763c2c2366ebce498ebecc969fb7822b9fbfe8b643356331ffef97a  hw/display/meson.build
+1075149f98e31482c2d98890f7ab3b8c51d21ef44b7e5c6ffde7b1943096a6de  hw/display/ybx_ssd1677.c
+8867c2607481cbdfd08672dbfe96358b6e97d4c5513a44eda433faa6d3cda9b9  hw/dma/esp32c3_gdma.c
+3bc7759f02101cf36104728176f9d6d0e03d77bd0a456cfc6d445da855d78101  hw/gpio/esp32_gpio.c
+e84c3dc82451bc513f28380ddc9d5113adbe54a6a733223bd09e3d3ed3a0bb63  hw/i2c/esp32_i2c.c
+84aa2e8cc5c13fe40ea22a5981a2a2114e9b36d47eeefcae161c57fcd755cb5e  hw/i2c/meson.build
+41d48b238ed25c2638c825f67fe89680c0516866c3a7c8f33b735db2bbc0c2b5  hw/i2c/ybx_x4pro_i2c.c
+31217ed0eb145a3fec8cae8902ef653d4fbdf2a57a16d7fb48ecf6323e1c9f90  hw/misc/esp32c3_jtag.c
+ffba13bc8f04b58ca69a501d4e2ddb2ad1a3655907e15b7be9a10e7f162aad1c  hw/riscv/esp32c3.c
+467260c811ecf85723b8459041c878caa7efebb1346b5f8d102319438353348e  hw/sd/dwc_sdmmc.c
+ca2d5bad1c27ed1b2be471b0d8ae178f66438babe3999c073529b08e0bd4f4fe  hw/ssi/meson.build
+b4b1ab55b860b140d5badbf438a6573fffa06a180fb7cd4b10724ab9a0e39f60  hw/ssi/ybx_esp32s3_spi2.c
+4ad688ffee644adc27d0caff4f86fa471fa1eb82219578b7f9558ba1e4115703  hw/timer/esp_systimer.c
+4c531abb2c4bc834632bb8b07d1c05b9402f604f7411cfbf1f448d67749a519b  hw/xtensa/esp32s3.c
+52ea95622a5c87958aaf55a22d196bafdc810f6adc2e37e1859344beda08efd6  include/hw/display/ybx_ssd1677.h
+83835d9f9758b049ff763c5dd59731d249846522a6330edc096920cde3eee41f  include/hw/gpio/esp32_gpio.h
+3ac686791c02b3f81723f0f67841e9d7a50f8d3460ab0960c8d2983a87b8b4f6  include/hw/i2c/esp32_i2c.h
+095223611f1d3f77c2d3c58a60893f636a74720aac3bbe90c7b047013a24cdee  include/hw/misc/esp32c3_jtag.h
+9bea2790d2803362b4f21e46e3a2af0fee51966900a4f612014b4b9489d61b70  include/hw/sd/dwc_sdmmc.h
+8a10b239a5a86fb6bcb174416ca2e5ab9c61fe39dd29ea284c1ffa2fe62ced77  include/hw/ssi/ybx_esp32s3_spi2.h
+8284518e79adf4a9a9b8250e7d61cb65e32ccc57dc5c7d0a2d687f1889f79f66  include/hw/timer/esp_systimer.h

@@ -1,0 +1,153 @@
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -5,6 +5,8 @@
+ #include "hw/registerfields.h"
+ 
+ #define TYPE_ESP32_GPIO "esp32.gpio"
++#define ESP32_GPIO_PIN_OUTPUT "ybx.gpio-pin"
++#define ESP32_GPIO_PINS 54
+ #define ESP32_GPIO(obj)             OBJECT_CHECK(Esp32GpioState, (obj), TYPE_ESP32_GPIO)
+ #define ESP32_GPIO_GET_CLASS(obj)   OBJECT_GET_CLASS(Esp32GpioClass, obj, TYPE_ESP32_GPIO)
+ #define ESP32_GPIO_CLASS(klass)     OBJECT_CLASS_CHECK(Esp32GpioClass, klass, TYPE_ESP32_GPIO)
+@@ -20,6 +22,13 @@
+     MemoryRegion iomem;
+     qemu_irq irq;
+     uint32_t strap_mode;
++    /* Opt-in register-level outputs for board peripherals, default OFF. */
++    bool emulate_outputs;
++    uint32_t out_lo;
++    uint32_t out_hi;
++    uint32_t enable_lo;
++    uint32_t enable_hi;
++    qemu_irq pin_out[ESP32_GPIO_PINS];
+ } Esp32GpioState;
+ 
+ typedef struct Esp32GpioClass {
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -21,10 +21,55 @@
+ 
+ 
+ 
++/* ESP32-S3 general-purpose GPIO register offsets, per ESP-IDF gpio_reg.h.
++ * When emulate_outputs is false, retain classic QEMU behavior unchanged. */
++#define GPIO_OUT          0x004
++#define GPIO_OUT_W1TS     0x008
++#define GPIO_OUT_W1TC     0x00c
++#define GPIO_OUT1         0x010
++#define GPIO_OUT1_W1TS    0x014
++#define GPIO_OUT1_W1TC    0x018
++#define GPIO_ENABLE       0x020
++#define GPIO_ENABLE_W1TS  0x024
++#define GPIO_ENABLE_W1TC  0x028
++#define GPIO_ENABLE1      0x02c
++#define GPIO_ENABLE1_W1TS 0x030
++#define GPIO_ENABLE1_W1TC 0x034
++#define GPIO_IN           0x03c
++#define GPIO_IN1          0x040
++
++static void esp32_gpio_notify_outputs(Esp32GpioState *s)
++{
++    if (!s->emulate_outputs) {
++        return;
++    }
++    for (int pin = 0; pin < ESP32_GPIO_PINS; pin++) {
++        bool output_en = pin < 32 ? (s->enable_lo & (1U << pin)) :
++                                    (s->enable_hi & (1U << (pin - 32)));
++        bool out_high = pin < 32 ? (s->out_lo & (1U << pin)) :
++                                   (s->out_hi & (1U << (pin - 32)));
++        /* Unconfigured line is high-impedance; connected GT911 lines
++         * are pulled HIGH by their virtual board. Do not model a
++         * physical pull-up for unrelated GPIO pins here. */
++        qemu_set_irq(s->pin_out[pin], output_en ? out_high : 1);
++    }
++}
++
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+     uint64_t r = 0;
++    if (s->emulate_outputs && size == 4) {
++        switch (addr) {
++        case GPIO_OUT: return s->out_lo;
++        case GPIO_OUT1: return s->out_hi;
++        case GPIO_ENABLE: return s->enable_lo;
++        case GPIO_ENABLE1: return s->enable_hi;
++        case GPIO_IN: return s->out_lo & s->enable_lo;
++        case GPIO_IN1: return s->out_hi & s->enable_hi;
++        default: break;
++        }
++    }
+     switch (addr) {
+     case A_GPIO_STRAP:
+         r = s->strap_mode;
+@@ -39,6 +84,27 @@
+ static void esp32_gpio_write(void *opaque, hwaddr addr,
+                        uint64_t value, unsigned int size)
+ {
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    if (!s->emulate_outputs || size != 4) {
++        return;
++    }
++    uint32_t v = (uint32_t)value;
++    switch (addr) {
++    case GPIO_OUT: s->out_lo = v; break;
++    case GPIO_OUT_W1TS: s->out_lo |= v; break;
++    case GPIO_OUT_W1TC: s->out_lo &= ~v; break;
++    case GPIO_OUT1: s->out_hi = v; break;
++    case GPIO_OUT1_W1TS: s->out_hi |= v; break;
++    case GPIO_OUT1_W1TC: s->out_hi &= ~v; break;
++    case GPIO_ENABLE: s->enable_lo = v; break;
++    case GPIO_ENABLE_W1TS: s->enable_lo |= v; break;
++    case GPIO_ENABLE_W1TC: s->enable_lo &= ~v; break;
++    case GPIO_ENABLE1: s->enable_hi = v; break;
++    case GPIO_ENABLE1_W1TS: s->enable_hi |= v; break;
++    case GPIO_ENABLE1_W1TC: s->enable_hi &= ~v; break;
++    default: return;
++    }
++    esp32_gpio_notify_outputs(s);
+ }
+ 
+ static const MemoryRegionOps uart_ops = {
+@@ -49,6 +115,10 @@
+ 
+ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
+ {
++    Esp32GpioState *s = ESP32_GPIO(obj);
++    s->out_lo = s->out_hi = 0;
++    s->enable_lo = s->enable_hi = 0;
++    esp32_gpio_notify_outputs(s);
+ }
+ 
+ static void esp32_gpio_realize(DeviceState *dev, Error **errp)
+@@ -67,12 +137,16 @@
+                           TYPE_ESP32_GPIO, 0x1000);
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
++    qdev_init_gpio_out_named(DEVICE(s), s->pin_out, ESP32_GPIO_PIN_OUTPUT,
++                             ESP32_GPIO_PINS);
+ }
+ 
+ static Property esp32_gpio_properties[] = {
+     /* The strap_mode needs to be explicitly set in the instance init, thus, set
+      * the default value to 0. */
+     DEFINE_PROP_UINT32("strap_mode", Esp32GpioState, strap_mode, 0),
++    DEFINE_PROP_BOOL("emulate-output-registers", Esp32GpioState,
++                     emulate_outputs, false),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -697,6 +697,8 @@
+     object_initialize_child(OBJECT(ss), "efuse", &ss->efuse, TYPE_ESP32S3_EFUSE);
+     object_initialize_child(OBJECT(ss), "jtag", &ss->jtag, TYPE_ESP32C3_JTAG);
+     object_initialize_child(OBJECT(ss), "gpio", &ss->gpio, TYPE_ESP32S3_GPIO);
++    qdev_prop_set_bit(DEVICE(&ss->gpio), "emulate-output-registers",
++                      ms->ybx_x4pro_i2c);
+     object_initialize_child(OBJECT(ss), "rng", &ss->rng, TYPE_ESP32S3_RNG);
+ 
+     object_initialize_child(OBJECT(ss), "clock", &ss->clock, TYPE_ESP32S3_CLOCK);

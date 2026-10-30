@@ -1,0 +1,105 @@
+diff --git a/include/hw/misc/esp32c3_jtag.h b/include/hw/misc/esp32c3_jtag.h
+--- a/include/hw/misc/esp32c3_jtag.h
++++ b/include/hw/misc/esp32c3_jtag.h
+@@ -12,6 +12,7 @@
+ #include "hw/hw.h"
+ #include "hw/sysbus.h"
+ #include "hw/registerfields.h"
++#include "chardev/char-fe.h"
+ 
+ #define TYPE_ESP32C3_JTAG "misc.esp32c3.usb_serial_jtag"
+ #define ESP32C3_JTAG(obj) OBJECT_CHECK(ESP32C3UsbJtagState, (obj), TYPE_ESP32C3_JTAG)
+@@ -22,5 +23,6 @@
+ typedef struct ESP32C3UsbJtagState {
+     SysBusDevice parent_object;
+     MemoryRegion iomem;
++    CharBackend chr;
+ } ESP32C3UsbJtagState;
+ 
+diff --git a/hw/misc/esp32c3_jtag.c b/hw/misc/esp32c3_jtag.c
+--- a/hw/misc/esp32c3_jtag.c
++++ b/hw/misc/esp32c3_jtag.c
+@@ -13,6 +13,8 @@
+ #include "qemu/error-report.h"
+ #include "hw/hw.h"
+ #include "hw/sysbus.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
+ #include "hw/misc/esp32c3_jtag.h"
+ 
+ 
+@@ -35,7 +37,10 @@
+ static void esp32c3_jtag_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
+ {
+     ESP32C3UsbJtagState *s = ESP32C3_JTAG(opaque);
+-    (void) s;
++    if (addr == 0x00 && qemu_chr_fe_backend_connected(&s->chr)) {
++        uint8_t ch = value & 0xff;
++        qemu_chr_fe_write(&s->chr, &ch, 1);
++    }
+ }
+ 
+ static const MemoryRegionOps esp32c3_jtag_ops = {
+@@ -52,8 +57,8 @@
+ 
+ static void esp32c3_jtag_realize(DeviceState *dev, Error **errp)
+ {
+-    (void) dev;
+-    (void) errp;
++    ESP32C3UsbJtagState *s = ESP32C3_JTAG(dev);
++    qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, s, NULL, true);
+ }
+ 
+ static void esp32c3_jtag_init(Object *obj)
+@@ -66,6 +71,11 @@
+     sysbus_init_mmio(sbd, &s->iomem);
+ }
+ 
++static Property esp32c3_jtag_properties[] = {
++    DEFINE_PROP_CHR("chardev", ESP32C3UsbJtagState, chr),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
+ static void esp32c3_jtag_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+@@ -73,6 +83,7 @@
+ 
+     rc->phases.hold = esp32c3_jtag_reset_hold;
+     dc->realize = esp32c3_jtag_realize;
++    device_class_set_props(dc, esp32c3_jtag_properties);
+ }
+ 
+ static const TypeInfo esp32c3_jtag_info = {
+diff --git a/hw/riscv/esp32c3.c b/hw/riscv/esp32c3.c
+--- a/hw/riscv/esp32c3.c
++++ b/hw/riscv/esp32c3.c
+@@ -448,8 +448,10 @@
+     /* Initialize OpenCores Ethernet controller now sicne it requires the interrupt matrix */
+     esp32c3_init_openeth(ms);
+ 
+-    /* USB Serial JTAG realization */
+-    {
++    /* Keep USB Serial JTAG separate from UART0..1. */
++    {
++        qdev_prop_set_chr(DEVICE(&ms->jtag), "chardev",
++                          serial_hd(ESP32C3_UART_COUNT));
+         sysbus_realize(SYS_BUS_DEVICE(&ms->jtag), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->jtag), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_USB_SERIAL_JTAG_BASE, mr, 0);
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -668,8 +668,10 @@
+     /* Initialize OpenCores Ethernet controller now sicne it requires the interrupt matrix */
+     esp32s3_init_openeth(ss);
+ 
+-    /* USB Serial JTAG realization */
+-    {
++    /* USB Serial JTAG uses a separate serial channel from UART0..2. */
++    {
++        qdev_prop_set_chr(DEVICE(&ss->jtag), "chardev",
++                          serial_hd(ESP32S3_UART_COUNT));
+         sysbus_realize(SYS_BUS_DEVICE(&ss->jtag), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->jtag), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_USB_SERIAL_JTAG_BASE, mr, 0);

@@ -1,0 +1,14 @@
+# Reproducible build toolchain for the open-source espressif/qemu fork.
+# IMPORTANT: Builds real QEMU only; does not claim guest peripheral acceptance.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+      build-essential python3 python3-venv python3-pip \
+      meson ninja-build pkg-config git \
+      libglib2.0-dev libpixman-1-dev zlib1g-dev \
+      libfdt-dev device-tree-compiler \
+      libgcrypt20-dev libgnutls28-dev nettle-dev \
+      libslirp-dev dosfstools && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src

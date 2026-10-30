@@ -1,0 +1,164 @@
+<div align="center">
+
+<img src="assets/hero.png" alt="YBX ESP32 System Emulator — real factory firmware inside QEMU" width="100%">
+
+### Run the reader. See the pixels. Debug the hardware.
+
+**A full-system ESP32 emulator for E-Ink readers — built on QEMU, running real firmware and capturing the actual panel framebuffer.**
+
+[![Project](https://img.shields.io/badge/project-YBX%20Reader%20Lab-202421?style=flat-square)](https://github.com/jhdvp/ybx-crosspoint)
+![Status](https://img.shields.io/badge/status-active%20development-C6A369?style=flat-square)
+![Platform](https://img.shields.io/badge/host-macOS%20%2B%20Docker-586D70?style=flat-square)
+![Guest](https://img.shields.io/badge/guest-ESP32--S3%20%2F%20ESP32--C3-567965?style=flat-square)
+[![Host checks](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml/badge.svg)](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml)
+![Tests](https://img.shields.io/badge/local%20tests-279%20pass%20%7C%207%20skip-567965?style=flat-square)
+![License](https://img.shields.io/badge/license-under%20review-777777?style=flat-square)
+
+[**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap)
+
+</div>
+
+---
+
+## Real firmware screenshots
+
+<p align="center"><img src="assets/gallery.png" width="100%" alt="Home, More, YBX Settings and System Settings captured from original X4 Pro firmware inside QEMU"></p>
+
+<p align="center"><sub>All four images come from real, unmodified X4 Pro firmware running inside QEMU. The screenshots are derived from the emulated SSD1677 display RAM — not HTML recreations, static UI mockups or a physical reader.</sub></p>
+
+<details>
+<summary><strong>Open individual full-resolution 480 × 800 captures</strong></summary>
+
+| Home | More | YBX Settings | System Settings |
+|:---:|:---:|:---:|:---:|
+| <img src="assets/screenshots/01-home.png" width="180"> | <img src="assets/screenshots/02-more.png" width="180"> | <img src="assets/screenshots/03-ybx-settings.png" width="180"> | <img src="assets/screenshots/04-system-settings.png" width="180"> |
+
+</details>
+
+## Emulation status
+
+> [!IMPORTANT]
+> **Research-grade emulator, not hardware-complete.** Booting a firmware image is not the same thing as faithfully simulating every ESP32 peripheral. The status below distinguishes measured behavior from missing functionality.
+
+| System | Status | Evidence / limitation |
+|:--|:--|:--|
+| ESP32-S3 Xtensa LX7 | 🟢 **Working** | Original bootloader and X4 Pro factory application execute in QEMU |
+| ESP32-C3 RISC-V | 🟡 **Partial** | Real ROM/boot/application execution verified; peripheral coverage is incomplete |
+| SSD1677 E-Ink 800 × 480 | 🟢 **Working (basic)** | Actual framebuffer writes, 480 × 800 oriented PNG capture and screen transitions |
+| GT911 touch controller | 🟢 **Working (basic)** | Virtual touch/release through QMP; factory UI reacts to real guest events |
+| GPIO6 / panel BUSY / IRQ | 🟡 **Instrumented** | CPU interrupt routing works; BUSY measurements need reset-order correction |
+| SDMMC / FAT media | 🟡 **Partial** | SDMMC DMA reads and selected FAT image workflows verified; not full card parity |
+| Browser interface | 🟢 **Working** | Live display, touch injection, reset, QEMU crash recovery |
+| Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Real radio register windows and interrupt/device semantics are missing |
+| TLS and cloud services | ⚪ **Unverified** | No verified end-to-end guest TLS session; do not infer it from host networking |
+| Power / sleep / waveform timing | 🟡 **Experimental** | Host lifecycle models and telemetry, not physical E-Ink fidelity |
+| X3 / X4 / other panels | 🟡 **Early bring-up** | CPU milestones exist; full interactive device coverage is not claimed |
+
+**Evidence:** standalone run: 286 tests (279 passed, 7 skipped). With the companion CrossPoint firmware source tree: 310 tests (304 passed, 6 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Factory firmware image] --> B[ESP32-S3 / ESP32-C3 QEMU]
+    B --> C[Emulated GPIO / SPI / I2C / SDMMC]
+    C --> D[SSD1677 frame memory]
+    D --> E[Browser viewport]
+    E -->|Tap coordinates| F[GT911 over QMP]
+    F --> B
+    B -.-> G[UART + QTest + diagnostic probes]
+```
+
+The browser reads the actual 1-bit emulated panel framebuffer. Touch coordinates travel back into the virtual GT911 controller. **The guest firmware, not the website, decides which screen appears.**
+
+## Getting started
+
+<details open>
+<summary><strong>1. Prerequisites</strong></summary>
+
+- macOS with Docker Desktop, Python 3.10+ and Git (the current development host is Apple Silicon).
+- A compatible, locally built **Espressif QEMU** checkout with the tested X4 Pro patches. No emulator binary is committed here.
+- Your own legally obtained ESP32-S3 factory ROM / merged flash image and SD card image. No factory firmware or private credentials are distributed.
+
+</details>
+
+<details open>
+<summary><strong>2. Clone and test the host tooling</strong></summary>
+
+```bash
+git clone https://github.com/jhdvp/ybx-esp32-emulator.git
+cd ybx-esp32-emulator
+python3 -m unittest discover -s tools/ybx-system-emu -p 'test_*.py'
+
+# Optional: validate real Wi-Fi state-machine code from your firmware checkout:
+YBX_FIRMWARE_ROOT="$HOME/Projects/YBX/CrossPoint-firmware" \
+  python3 -m unittest discover -s tools/ybx-system-emu -p 'test_*.py'
+```
+
+</details>
+
+<details open>
+<summary><strong>3. Start the browser with your local QEMU and images</strong></summary>
+
+```bash
+# These paths are intentionally external to the Git repository.
+export YBX_QEMU_ROOT="$HOME/path/to/patched-qemu"
+export YBX_QA_DIR="$HOME/path/to/your-firmware-images"
+export YBX_BROWSER_BIND_ADDRESS=127.0.0.1
+export YBX_BROWSER_PORT=8784
+
+# YBX_QA_DIR must contain:
+#   s3-full-rom-generator-test.bin
+#   s3-flash-complete-rom-test.bin
+#   ybx-test-sd-fat16-mbr-pristine.img
+
+docker build -f tools/ybx-system-emu/Dockerfile.qemu -t ybx-qemu-builder:20261029 .
+bash tools/ybx-system-emu/start_x4pro_browser.sh
+```
+
+Open **http://127.0.0.1:8784/**. The launcher checks required files and avoids exposing its unauthenticated API on public IP addresses. This is a *bring-up workflow*, not yet a one-command emulator installer. For hardware evidence and the patch chain, read [`QEMU_BRINGUP.md`](tools/ybx-system-emu/QEMU_BRINGUP.md) and [`experiments/README.md`](tools/ybx-system-emu/experiments/README.md).
+
+</details>
+
+## What's inside
+
+```text
+assets/                   ← genuine firmware captures + README artwork
+scripts/                  ← gallery renderer
+tools/ybx-system-emu/
+    serve_x4pro_browser.py    ← live browser + QMP bridge
+    start_x4pro_browser.sh    ← Docker launcher
+    probe_*.py                ← CPU/peripheral acceptance probes
+    test_*.py                 ← host regression suite
+    check_qemu_patch_composition.py
+    patches/                  ← QEMU patch inventory and provenance
+    experiments/              ← reproducible research notes and candidate patches
+    QEMU_BRINGUP.md           ← detailed hardware evidence
+```
+
+## Roadmap
+
+- [x] Real X4 Pro factory boot, SSD1677 home screen, GT911 navigation
+- [x] Home → More → YBX Settings → System Settings → Back acceptance evidence
+- [x] Browser process recovery and typed HTTP failures
+- [x] Wi-Fi capability gap analysis, FreeRTOS and BUSY/IRQ investigations
+- [ ] Fix BUSY telemetry reset ordering and verify in rebuilt QEMU
+- [ ] Make patched QEMU reproducible from a clean checkout and publish build verification
+- [ ] Add proper ESP32-S3 Wi-Fi radio/MAC support and isolated connection testing
+- [ ] Expand SSD1677 waveform, sleep/reset and power correctness
+- [ ] Extend device fidelity to X3, X4, further controller/panel variants
+- [ ] Cross-platform packaging, automated CI and release artifacts
+
+## Safety, provenance & scope
+
+This repository contains **host-side tooling, tests, QEMU patch proposals and evidence**, not a bundled ESP32 factory image, device keys, cloud passwords or a prebuilt QEMU executable. Use an isolated guest network unless testing a controlled service. LAN HTTP control has no authentication: do not publish ports to the internet. QEMU itself is an upstream project with its own licensing and attribution; applicable licensing of our extracted tooling and QEMU-derived patches is being reviewed before release packaging.
+
+The emulator originated as the system-emulation lab for [YBX CrossPoint firmware](https://github.com/jhdvp/ybx-crosspoint), but **is now developed as a separate project**. Firmware, plugin work and the emulation platform follow independent development tracks.
+
+<div align="center">
+
+---
+
+<sub>Built for understanding real E-Ink firmware behavior, one interrupt and one genuine frame at a time.</sub>
+
+</div>

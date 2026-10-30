@@ -1,0 +1,67 @@
+diff --git a/hw/riscv/esp32c3.c b/hw/riscv/esp32c3.c
+--- a/hw/riscv/esp32c3.c
++++ b/hw/riscv/esp32c3.c
+@@ -92,6 +92,8 @@
+     ESP32C3UsbJtagState jtag;
+     ESPRgbState rgb;
+     Esp32C3TWAIState twai;
++    uint32_t adc_oneshot;
++    uint32_t adc_int_raw;
+ };
+ 
+ /* Fake register used by ESP-IDF application to determine whether the code is running on real hardware or on QEMU */
+@@ -147,6 +149,21 @@
+ 
+ static uint64_t esp32c3_io_read(void *opaque, hwaddr addr, unsigned int size)
+ {
++    Esp32C3MachineState *ms = opaque;
++    if (size == 4) {
++        hwaddr absolute = addr + ESP32C3_IO_START_ADDR;
++        if (absolute == DR_REG_APB_SARADC_BASE + 0x020) {
++            return ms->adc_oneshot;
++        }
++        if (absolute == DR_REG_APB_SARADC_BASE + 0x044 ||
++            absolute == DR_REG_APB_SARADC_BASE + 0x048) {
++            return ms->adc_int_raw;
++        }
++        if (absolute == DR_REG_APB_SARADC_BASE + 0x02c ||
++            absolute == DR_REG_APB_SARADC_BASE + 0x030) {
++            return 0; /* only a handshake test, not a sensor measurement */
++        }
++    }
+     if (addr_in_range(addr + ESP32C3_IO_START_ADDR, DR_REG_RTC_I2C_BASE, DR_REG_RTC_I2C_BASE + 0x100)) {
+         return (uint32_t) 0xffffff;
+     } else if (addr + ESP32C3_IO_START_ADDR == DR_REG_SYSCON_BASE + A_SYSCON_ORIGIN_REG) {
+@@ -172,6 +189,23 @@
+ 
+ static void esp32c3_io_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
+ {
++    Esp32C3MachineState *ms = opaque;
++    if (size == 4) {
++        hwaddr absolute = addr + ESP32C3_IO_START_ADDR;
++        if (absolute == DR_REG_APB_SARADC_BASE + 0x020) {
++            ms->adc_oneshot = (uint32_t)value;
++            if (value & (1U << 29)) {
++                /* ADC conversion complete; deliberately fixed zero data. */
++                ms->adc_int_raw |= (value & (1U << 31)) ?
++                                   (1U << 31) : (1U << 30);
++            }
++            return;
++        }
++        if (absolute == DR_REG_APB_SARADC_BASE + 0x04c) {
++            ms->adc_int_raw &= ~(uint32_t)value;
++            return;
++        }
++    }
+ #if ESP32C3_IO_WARNING
+         warn_report("[ESP32-C3] Unsupported write $%08lx = %08lx\n", ESP32C3_IO_START_ADDR + addr, value);
+ #endif
+@@ -384,7 +418,7 @@
+     qdev_realize(DEVICE(&ms->soc), NULL, &error_fatal);
+ 
+     memory_region_init_io(&ms->iomem, OBJECT(&ms->soc), &esp32c3_io_ops,
+-                          NULL, "esp32c3.iomem", 0xd1000);
++                          ms, "esp32c3.iomem", 0xd1000);
+     memory_region_add_subregion(sys_mem, ESP32C3_IO_START_ADDR, &ms->iomem);
+ 
+ 

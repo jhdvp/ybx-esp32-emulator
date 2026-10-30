@@ -1,0 +1,265 @@
+diff --git a/include/hw/ssi/ybx_esp32s3_spi2.h b/include/hw/ssi/ybx_esp32s3_spi2.h
+new file mode 100644
+--- /dev/null
++++ b/include/hw/ssi/ybx_esp32s3_spi2.h
+@@ -0,0 +1,16 @@
++/* Experimental X4 Pro GP-SPI2 register/PIO scaffold, NOT a panel. */
++#pragma once
++#include "hw/sysbus.h"
++#include "hw/ssi/ssi.h"
++
++#define TYPE_YBX_S3_GPSPI2 "ybx.s3.gpspi2"
++OBJECT_DECLARE_SIMPLE_TYPE(YbxS3GPSpi2State, YBX_S3_GPSPI2)
++typedef struct YbxS3GPSpi2State {
++    SysBusDevice parent_obj;
++    MemoryRegion iomem;
++    SSIBus *spi;
++    uint32_t regs[0x1000 / 4];
++    uint32_t bytes_sent;
++    uint32_t transfer_count;
++    uint32_t last_byte;
++} YbxS3GPSpi2State;
+diff --git a/hw/ssi/ybx_esp32s3_spi2.c b/hw/ssi/ybx_esp32s3_spi2.c
+new file mode 100644
+--- /dev/null
++++ b/hw/ssi/ybx_esp32s3_spi2.c
+@@ -0,0 +1,127 @@
++/*
++ * Experimental ESP32-S3 GP-SPI2 PIO register and user transfer scaffold.
++ * Correct GP-SPI2 offsets differ from SPI1 flash/PSRAM controller.
++ * No DMA/GDMA, GPIO matrix, EPD slave, busy pin, or display framebuffer
++ * implemented. Must not be called a working e-paper emulator.
++ */
++#include "qemu/osdep.h"
++#include "hw/ssi/ybx_esp32s3_spi2.h"
++#include "hw/ssi/ssi.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "qemu/module.h"
++#include "qom/object.h"
++
++#define GP_SPI_CMD 0x000
++#define GP_SPI_USR (1U << 24)
++#define GP_SPI_USER 0x010
++#define GP_SPI_USER2 0x018
++#define GP_SPI_MS_DLEN 0x01c
++#define GP_SPI_W0 0x098
++#define GP_SPI_BUFFER 64
++
++static uint64_t ybx_spi2_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    YbxS3GPSpi2State *s = opaque;
++    if (size != 4 || addr >= 0x1000) {
++        return 0;
++    }
++    return s->regs[addr / 4];
++}
++
++static void ybx_spi2_transfer(YbxS3GPSpi2State *s)
++{
++    /* CPU-controlled MOSI phase only. The genuine ESP32 SPI2 driver
++     * sends a value of bits-minus-one in MS_DLEN. */
++    if (!(s->regs[GP_SPI_USER / 4] & (1U << 27))) {
++        return;
++    }
++    uint32_t bits = (s->regs[GP_SPI_MS_DLEN / 4] & 0x3ffff) + 1;
++    uint32_t bytes = (bits + 7) / 8;
++    if (!bytes || bytes > GP_SPI_BUFFER) {
++        /* DMA and larger frames are explicitly NOT emulated. */
++        return;
++    }
++    if (s->regs[GP_SPI_USER / 4] & (1U << 31)) {
++        uint32_t cmd = s->regs[GP_SPI_USER2 / 4] & 0xffff;
++        uint32_t command_bits = ((s->regs[GP_SPI_USER2 / 4] >> 28) & 0xf) + 1;
++        for (uint32_t i = 0; i < (command_bits + 7) / 8; ++i) {
++            ssi_transfer(s->spi, (cmd >> (8 * i)) & 0xff);
++        }
++    }
++    const uint8_t *buffer = (const uint8_t *)&s->regs[GP_SPI_W0 / 4];
++    for (uint32_t i = 0; i < bytes; i++) {
++        uint8_t byte = buffer[i];
++        ssi_transfer(s->spi, byte);
++        s->last_byte = byte;
++    }
++    s->bytes_sent += bytes;
++    s->transfer_count++;
++}
++
++static void ybx_spi2_write(void *opaque, hwaddr addr,
++                           uint64_t value, unsigned int size)
++{
++    YbxS3GPSpi2State *s = opaque;
++    if (size != 4 || addr >= 0x1000) {
++        return;
++    }
++    s->regs[addr / 4] = (uint32_t)value;
++    if (addr == GP_SPI_CMD) {
++        if ((uint32_t)value & GP_SPI_USR) {
++            ybx_spi2_transfer(s);
++        }
++        /* GP-SPI2 SPI_CMD.UPDATE bit23 is a self-clearing register
++         * synchronization operation. If left high, ESP-IDF hangs
++         * polling for the SPI driver's configuration completion. */
++        s->regs[GP_SPI_CMD / 4] &= ~(GP_SPI_USR | (1U << 23));
++    }
++}
++
++static const MemoryRegionOps ybx_spi2_ops = {
++    .read = ybx_spi2_read,
++    .write = ybx_spi2_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {.min_access_size = 4, .max_access_size = 4},
++};
++
++static void ybx_spi2_reset(DeviceState *dev)
++{
++    YbxS3GPSpi2State *s = YBX_S3_GPSPI2(dev);
++    memset(s->regs, 0, sizeof(s->regs));
++    s->bytes_sent = s->transfer_count = s->last_byte = 0;
++}
++
++static void ybx_spi2_init(Object *obj)
++{
++    YbxS3GPSpi2State *s = YBX_S3_GPSPI2(obj);
++    memory_region_init_io(&s->iomem, obj, &ybx_spi2_ops, s,
++                          "ybx.s3.gpspi2.mmio", 0x1000);
++    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
++    s->spi = ssi_create_bus(DEVICE(s), "spi");
++    object_property_add_uint32_ptr(obj, "bytes-sent", &s->bytes_sent,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "transactions", &s->transfer_count,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "last-byte", &s->last_byte,
++                                   OBJ_PROP_FLAG_READ);
++}
++
++static void ybx_spi2_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    device_class_set_legacy_reset(dc, ybx_spi2_reset);
++}
++
++static const TypeInfo ybx_spi2_type = {
++    .name = TYPE_YBX_S3_GPSPI2,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(YbxS3GPSpi2State),
++    .instance_init = ybx_spi2_init,
++    .class_init = ybx_spi2_class_init,
++};
++static void ybx_spi2_register(void)
++{
++    type_register_static(&ybx_spi2_type);
++}
++type_init(ybx_spi2_register)
+diff --git a/hw/ssi/meson.build b/hw/ssi/meson.build
+--- a/hw/ssi/meson.build
++++ b/hw/ssi/meson.build
+@@ -13,7 +13,7 @@
+ system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_spi.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32c3_spi.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32C6', if_true: files('esp32c3_spi.c', 'esp32c6_spi.c'))
+-system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32s3_spi.c'))
++system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32s3_spi.c', 'ybx_esp32s3_spi2.c'))
+ system_ss.add(when: 'CONFIG_IBEX', if_true: files('ibex_spi_host.c'))
+ system_ss.add(when: 'CONFIG_BCM2835_SPI', if_true: files('bcm2835_spi.c'))
+ system_ss.add(when: 'CONFIG_PNV_SPI', if_true: files('pnv_spi.c'))
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -47,6 +47,7 @@
+ #include "elf.h"
+ 
+ #include "hw/ssi/esp32s3_spi.h"
++#include "hw/ssi/ybx_esp32s3_spi2.h"
+ #include "hw/misc/esp32s3_cache.h"
+ #include "hw/char/esp32s3_uart.h"
+ #include "hw/misc/esp32s3_rng.h"
+@@ -127,6 +128,7 @@
+     bool ybx_x4pro_i2c;
+     bool ybx_x4pro_gt911;
+     bool ybx_x4pro_sd_power;
++    bool ybx_x4pro_spi2;
+     I2CSlave *ybx_gt911;
+     ESP32S3GPIOState gpio;
+     Esp32s3RngState rng;
+@@ -139,6 +141,7 @@
+ 
+     MemoryRegion cpu_specific_mem[ESP32S3_CPU_COUNT];
+     ESP32S3SpiState spi1;
++    YbxS3GPSpi2State spi2;
+     ESP32S3CacheState cache;
+     ESP32S3EfuseState efuse;
+     ESP32S3ClockState clock;
+@@ -345,6 +348,7 @@
+     bool ybx_x4pro_i2c;
+     bool ybx_x4pro_gt911;
+     bool ybx_x4pro_sd_power;
++    bool ybx_x4pro_spi2;
+ };
+ #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
+ 
+@@ -717,6 +721,7 @@
+     qdev_prop_set_bit(DEVICE(ss), "ybx-x4pro-gt911", ms->ybx_x4pro_gt911);
+     qdev_prop_set_bit(DEVICE(ss), "ybx-x4pro-sd-power",
+                       ms->ybx_x4pro_sd_power);
++    ss->ybx_x4pro_spi2 = ms->ybx_x4pro_spi2;
+ 
+     MemoryRegion *dram = g_new(MemoryRegion, 1);
+     const struct MemmapEntry *memmap = esp32s3_memmap;
+@@ -738,6 +743,10 @@
+ 
+     object_initialize_child(OBJECT(ss), "extmem", &ss->cache, TYPE_ESP32S3_CACHE);
+     object_initialize_child(OBJECT(ss), "spi1", &ss->spi1, TYPE_ESP32S3_SPI);
++    if (ms->ybx_x4pro_spi2) {
++        object_initialize_child(OBJECT(ss), "spi2", &ss->spi2,
++                                TYPE_YBX_S3_GPSPI2);
++    }
+     object_initialize_child(OBJECT(ss), "efuse", &ss->efuse, TYPE_ESP32S3_EFUSE);
+     object_initialize_child(OBJECT(ss), "jtag", &ss->jtag, TYPE_ESP32C3_JTAG);
+     object_initialize_child(OBJECT(ss), "gpio", &ss->gpio, TYPE_ESP32S3_GPIO);
+@@ -778,6 +787,16 @@
+         sysbus_realize(SYS_BUS_DEVICE(&ss->jtag), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->jtag), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_USB_SERIAL_JTAG_BASE, mr, 0);
++    }
++
++    /* Experimental GP-SPI2, separate from SPI1 Flash/Octal PSRAM. */
++    if (ss->ybx_x4pro_spi2) {
++        sysbus_realize(SYS_BUS_DEVICE(&ss->spi2), &error_fatal);
++        MemoryRegion *spi2_mmio =
++            sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->spi2), 0);
++        memory_region_add_subregion_overlap(sys_mem,
++                                            DR_REG_SPI2_BASE,
++                                            spi2_mmio, 0);
+     }
+ 
+     /* SPI1 controller (SPI Flash) */
+@@ -1132,6 +1151,16 @@
+ static void esp32s3_set_ybx_sd_power(Object *obj, bool value, Error **errp)
+ {
+     ESP32S3_MACHINE(obj)->ybx_x4pro_sd_power = value;
++}
++
++static bool esp32s3_get_ybx_spi2(Object *obj, Error **errp)
++{
++    return ESP32S3_MACHINE(obj)->ybx_x4pro_spi2;
++}
++
++static void esp32s3_set_ybx_spi2(Object *obj, bool value, Error **errp)
++{
++    ESP32S3_MACHINE(obj)->ybx_x4pro_spi2 = value;
+ }
+ 
+ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
+@@ -1158,6 +1187,11 @@
+                                    esp32s3_set_ybx_sd_power);
+     object_class_property_set_description(oc, "ybx-x4pro-sd-power",
+         "Optional X4 Pro native SDMMC card power: GPIO1 HIGH and GPIO5 LOW");
++    object_class_property_add_bool(oc, "ybx-x4pro-spi2",
++                                   esp32s3_get_ybx_spi2,
++                                   esp32s3_set_ybx_spi2);
++    object_class_property_set_description(oc, "ybx-x4pro-spi2",
++        "Experimental S3 GP-SPI2 PIO-only transport; NO e-paper panel");
+ }
+ 
+ static const TypeInfo esp32s3_info = {

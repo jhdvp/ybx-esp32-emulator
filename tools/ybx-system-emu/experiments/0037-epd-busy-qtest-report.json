@@ -1,0 +1,136 @@
+{
+  "qemu_binary": "/qemu/build-ybx/qemu-system-xtensa",
+  "machine": "esp32s3,ybx-x4pro-spi2=on,ybx-x4pro-epd=on",
+  "vcpu_state": "running with no flash: only test MMIO reaches SPI2/GPIO",
+  "qtest_commands": 221,
+  "qemu_stderr_tail": "000400c 0x40000\n[S +0.121459] OK\n[R +0.121506] writel 0x60024010 0x8000000\n[S +0.121512] OK\n[R +0.121580] writel 0x6002401c 0x7\n[S +0.121586] OK\n[R +0.121643] writel 0x60024098 0x20\n[S +0.121650] OK\n[R +0.121740] writel 0x60024000 0x1000000\n[S +0.121749] OK\n[R +0.121832] writel 0x6000404c 0x40\n[S +0.121845] OK\n[R +0.122603] clock_step 351000000\n[S +0.122622] OK 1402000000\n[R +0.122803] writel 0x6000404c 0x40\n[S +0.122811] OK\n[R +0.123712] writel 0x6000408c 0x0\n[S +0.123736] OK\n[I +0.125415] CLOSED\nqemu-system-xtensa: GLib: g_timer_elapsed: assertion 'timer != NULL' failed\n[I +0.000000] CLOSED\n",
+  "checks": {
+    "idle_busy_low": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "idle_gpio_in_low": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "assert_rises_busy": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "assert_rises_guest_visible": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "unarmed_edge_no_status_latch": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "unarmed_edge_no_machine_irq": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "display_refresh_busy_high_ms": {
+      "value": 350,
+      "expected": null,
+      "pass": true
+    },
+    "armed_idle_no_irq": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "rising_edge_latches_status": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "rising_edge_visible_in_pcpu_int": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "rising_edge_raises_machine_irq": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "w1tc_clears_pcpu_int": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "w1tc_lower_machine_irq": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "falling_edge_busy_low": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "falling_edge_latches_status": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "falling_edge_raises_machine_irq": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "completion_ack_clears_irq": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "poweron_does_not_paint": {
+      "value": 2,
+      "expected": 2,
+      "pass": true
+    },
+    "poweron_busy_high": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "poweron_busy_high_ms": {
+      "value": 350,
+      "expected": null,
+      "pass": true
+    },
+    "level_idle_no_irq": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "level_reasserts_while_busy_high": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "level_clears_after_release": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "edge_telemetry": {
+      "value": "absent (pre-0037 build)",
+      "expected": null,
+      "pass": true
+    }
+  },
+  "failed": [],
+  "bus_semantic_summary": {
+    "edges_per_refresh": 2,
+    "display_start_busy_ms": 350,
+    "power_only_busy_ms": 350,
+    "ack_register": "GPIO_STATUS_W1TC 0x4C; guest reads GPIO_PCPU_INT 0x5C"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "qemu_binary": "/qemu/build-ybx/qemu-system-xtensa",
+  "machine": "esp32s3,ybx-x4pro-spi2=on,ybx-x4pro-epd=on",
+  "vcpu_state": "frozen (-S)",
+  "checks": {
+    "idle_busy_low": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "idle_gpio_in_low": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "assert_rises_busy": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "assert_rises_guest_visible": {
+      "value": 1,
+      "expected": 1,
+      "pass": true
+    },
+    "unarmed_edge_no_status_latch": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "unarmed_edge_no_machine_irq": {
+      "value": 0,
+      "expected": 0,
+      "pass": true
+    },
+    "frozen_busy_release_deferred": {
+      "value": "still high after 1500 ms of clock_step",
+      "expected": "still high",
+      "pass": true
+    }
+  },
+  "failed": [],
+  "qtest_commands": 322
+}

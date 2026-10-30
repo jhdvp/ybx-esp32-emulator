@@ -1,0 +1,53 @@
+diff --git a/hw/dma/esp32c3_gdma.c b/hw/dma/esp32c3_gdma.c
+index 20bee36..4dfc06e 100644
+--- a/hw/dma/esp32c3_gdma.c
++++ b/hw/dma/esp32c3_gdma.c
+@@ -50,8 +50,9 @@ static void esp32c3_to_int_bitmask(uint32_t value, uint32_t *in_value, uint32_t
+     assert(in_value != NULL && out_value != NULL);
+     int i = 0;
+ 
+-    /* IN bitmasks are first in the mapping */
+-    for (i = 0; i < DIM(int_mapping) / 2; i++) {
++    /* Five IN entries precede four OUT entries. Never split odd-sized
++     * mapping by DIM/2: that misclassifies IN_DONE as an OUT IRQ. */
++    for (i = 0; i < 5; i++) {
+         if (value & int_mapping[i].specific) {
+             *in_value |= int_mapping[i].generic;
+         }
+@@ -75,7 +76,7 @@ static uint32_t esp32c3_from_int_bitmask(uint32_t in_value, uint32_t out_value)
+     int i = 0;
+     uint32_t r = 0;
+ 
+-    for (i = 0; i < DIM(int_mapping) / 2; i++) {
++    for (i = 0; i < 5; i++) {
+         if (in_value & int_mapping[i].generic) {
+             r |= int_mapping[i].specific;
+         }
+@@ -145,8 +146,11 @@ static DmaRegister esp32c3_generic_reg(uint32_t reg)
+ static uint32_t esp32c3_read_int_register(ESP32C3GdmaState *s, hwaddr addr)
+ {
+     /* Check which channel and which direction is being written to */
+-    const uint32_t chan = addr / DMA_DIR_REGS_SIZE;
+-    const uint32_t reg  = addr % DMA_DIR_REGS_SIZE;
++    /* Interrupt banks are 0x10 bytes per channel, NOT 0x60 (the
++     * per-direction configuration block size). Using the latter maps
++     * interrupt offsets 0x10..0x2c outside R_DMA_INT_CLR and asserts. */
++    const uint32_t chan = addr / DMA_INT_CHAN_REGS_SIZE;
++    const uint32_t reg  = addr % DMA_INT_CHAN_REGS_SIZE;
+     const uint32_t generic_reg = esp32c3_generic_int_reg(reg);
+ 
+     uint32_t in_value  = esp_gdma_read_chan_register(&s->parent, ESP_GDMA_IN_IDX, chan, generic_reg);
+@@ -205,8 +209,11 @@ static uint64_t esp32c3_gdma_read(void *opaque, hwaddr addr, unsigned int size)
+ static void esp32c3_write_int_register(ESP32C3GdmaState *s, hwaddr addr, uint32_t value)
+ {
+     /* Check which channel and which direction is being written to */
+-    const uint32_t chan = addr / DMA_DIR_REGS_SIZE;
+-    const uint32_t reg  = addr % DMA_DIR_REGS_SIZE;
++    /* Interrupt banks are 0x10 bytes per channel, NOT 0x60 (the
++     * per-direction configuration block size). Using the latter maps
++     * interrupt offsets 0x10..0x2c outside R_DMA_INT_CLR and asserts. */
++    const uint32_t chan = addr / DMA_INT_CHAN_REGS_SIZE;
++    const uint32_t reg  = addr % DMA_INT_CHAN_REGS_SIZE;
+     uint32_t in_value = 0;
+     uint32_t out_value = 0;
+ 

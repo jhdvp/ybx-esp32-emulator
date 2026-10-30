@@ -1,0 +1,237 @@
+diff --git a/include/hw/sd/dwc_sdmmc.h b/include/hw/sd/dwc_sdmmc.h
+--- a/include/hw/sd/dwc_sdmmc.h
++++ b/include/hw/sd/dwc_sdmmc.h
+@@ -50,6 +50,12 @@
+     uint32_t idsts;
+ 
+     size_t bytes_left;
++    /* Board-specific SD power switch; disabled by default. */
++    bool ybx_gate_sd_power;
++    bool ybx_master_high;
++    bool ybx_sd_enable_low;
++    bool ybx_slot_powered;
++    SDState *ybx_card;
+ 
+ 
+ } DWCSDMMCState;
+diff --git a/hw/sd/dwc_sdmmc.c b/hw/sd/dwc_sdmmc.c
+--- a/hw/sd/dwc_sdmmc.c
++++ b/hw/sd/dwc_sdmmc.c
+@@ -24,6 +24,7 @@
+ #include "qemu/log.h"
+ #include "qemu/error-report.h"
+ #include "hw/sd/dwc_sdmmc.h"
++#include "sysemu/reset.h"
+ #include "qapi/error.h"
+ #include "hw/irq.h"
+ #include "hw/qdev-properties.h"
+@@ -197,6 +198,40 @@
+ 
+ 
+ #define SDMMC_DMA_MAX_BUF_LEN 4096
++
++static void dwc_sdmmc_board_power_update(DWCSDMMCState *s)
++{
++    if (!s->ybx_gate_sd_power) {
++        return;
++    }
++    bool powered = s->ybx_master_high && s->ybx_sd_enable_low;
++    if (powered == s->ybx_slot_powered) {
++        return;
++    }
++    s->ybx_slot_powered = powered;
++    if (s->ybx_card) {
++        SDCardClass *card_class = SD_CARD_GET_CLASS(s->ybx_card);
++        card_class->enable(s->ybx_card, powered);
++        if (powered) {
++            /* A real slot power cycle restarts card identification. */
++            device_cold_reset(DEVICE(s->ybx_card));
++        }
++    }
++}
++
++static void dwc_sdmmc_master_power(void *opaque, int n, int level)
++{
++    DWCSDMMCState *s = DWC_SDMMC(opaque);
++    s->ybx_master_high = level != 0;
++    dwc_sdmmc_board_power_update(s);
++}
++
++static void dwc_sdmmc_slot_enable(void *opaque, int n, int level)
++{
++    DWCSDMMCState *s = DWC_SDMMC(opaque);
++    s->ybx_sd_enable_low = level == 0;
++    dwc_sdmmc_board_power_update(s);
++}
+ 
+ static bool dwc_sdmmc_ctrl_interrupts_enabled(uint32_t ctrl_reg)
+ {
+@@ -534,6 +569,8 @@
+ 
+ 
+ static Property dwc_sdmmc_properties[] = {
++        DEFINE_PROP_BOOL("ybx-x4pro-sd-power", DWCSDMMCState,
++                         ybx_gate_sd_power, false),
+         DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+@@ -548,6 +585,10 @@
+                           TYPE_DWC_SDMMC, 4 * KiB);
+     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+     sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq);
++    qdev_init_gpio_in_named(DEVICE(s), dwc_sdmmc_master_power,
++                            "ybx.sd-master-rail", 1);
++    qdev_init_gpio_in_named(DEVICE(s), dwc_sdmmc_slot_enable,
++                            "ybx.sd-slot-enable", 1);
+ }
+ 
+ static void dwc_sdmmc_reset(DeviceState *dev)
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -126,6 +126,7 @@
+     Esp32I2CState i2c[ESP32S3_I2C_COUNT];
+     bool ybx_x4pro_i2c;
+     bool ybx_x4pro_gt911;
++    bool ybx_x4pro_sd_power;
+     I2CSlave *ybx_gt911;
+     ESP32S3GPIOState gpio;
+     Esp32s3RngState rng;
+@@ -323,7 +324,16 @@
+         /* See the comment on not using sysbus-default in esp32_machine_init_i2c */
+         DeviceState *sdmmc = DEVICE(&ss->sdmmc);
+         SDBus* sd_bus = SD_BUS(qdev_get_child_bus(sdmmc, "sd-bus"));
+-        qdev_realize_and_unref(card, BUS(sd_bus), &error_fatal);
++        qdev_realize(card, BUS(sd_bus), &error_fatal);
++        if (ss->ybx_x4pro_sd_power) {
++            ss->sdmmc.ybx_card = SD_CARD(card);
++            /* In the real board, an unconfigured GPIO5 holds the
++             * card slot powered off until firmware asserts GPIO1
++             * HIGH and GPIO5 LOW. */
++            SD_CARD_GET_CLASS(ss->sdmmc.ybx_card)->enable(
++                ss->sdmmc.ybx_card, false);
++        }
++        object_unref(OBJECT(card));
+     }
+ }
+ 
+@@ -334,6 +344,7 @@
+     DeviceState *flash_dev;
+     bool ybx_x4pro_i2c;
+     bool ybx_x4pro_gt911;
++    bool ybx_x4pro_sd_power;
+ };
+ #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
+ 
+@@ -467,6 +478,8 @@
+                                   OBJECT(s->ybx_gt911), "inject-state");
+     }
+ 
++    qdev_prop_set_bit(DEVICE(&s->sdmmc), "ybx-x4pro-sd-power",
++                      s->ybx_x4pro_sd_power);
+     qdev_realize(DEVICE(&s->sdmmc), &s->periph_bus, &error_fatal);
+     esp32s3_soc_add_periph_device(sys_mem, &s->sdmmc, DR_REG_SDMMC_BASE);
+     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0,
+@@ -624,6 +637,8 @@
+ static Property esp32s3_soc_properties[] = {
+     DEFINE_PROP_BOOL("ybx-x4pro-i2c", Esp32s3SocState, ybx_x4pro_i2c, false),
+     DEFINE_PROP_BOOL("ybx-x4pro-gt911", Esp32s3SocState, ybx_x4pro_gt911, false),
++    DEFINE_PROP_BOOL("ybx-x4pro-sd-power", Esp32s3SocState,
++                     ybx_x4pro_sd_power, false),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+@@ -668,6 +683,18 @@
+     char * name_apb = g_strdup_printf("%s-apb", name);
+     create_unimplemented_device(name_apb, dport_base_addr + APB_REG_BASE, size);
+     g_free(name_apb);
++}
++
++/* The pin GPIO1 drives BOTH the GT911 and the SD slot master rail
++ * when both virtual board profiles are enabled. QEMU does not permit
++ * two independent consumers to be attached to the same output pin. */
++static void esp32s3_x4pro_shared_power(void *opaque, int pin, int level)
++{
++    Esp32s3SocState *ss = opaque;
++    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(ss->ybx_gt911),
++                                       "ybx.gt911.master-rail", 0), level);
++    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&ss->sdmmc),
++                                       "ybx.sd-master-rail", 0), level);
+ }
+ 
+ static void esp32s3_machine_init(MachineState *machine)
+@@ -688,6 +715,8 @@
+     Esp32s3SocState *ss = ESP32S3_SOC(&ms->esp32s3);
+     qdev_prop_set_bit(DEVICE(ss), "ybx-x4pro-i2c", ms->ybx_x4pro_i2c);
+     qdev_prop_set_bit(DEVICE(ss), "ybx-x4pro-gt911", ms->ybx_x4pro_gt911);
++    qdev_prop_set_bit(DEVICE(ss), "ybx-x4pro-sd-power",
++                      ms->ybx_x4pro_sd_power);
+ 
+     MemoryRegion *dram = g_new(MemoryRegion, 1);
+     const struct MemmapEntry *memmap = esp32s3_memmap;
+@@ -713,7 +742,7 @@
+     object_initialize_child(OBJECT(ss), "jtag", &ss->jtag, TYPE_ESP32C3_JTAG);
+     object_initialize_child(OBJECT(ss), "gpio", &ss->gpio, TYPE_ESP32S3_GPIO);
+     qdev_prop_set_bit(DEVICE(&ss->gpio), "emulate-output-registers",
+-                      ms->ybx_x4pro_i2c);
++                      ms->ybx_x4pro_i2c || ms->ybx_x4pro_sd_power);
+     object_initialize_child(OBJECT(ss), "rng", &ss->rng, TYPE_ESP32S3_RNG);
+ 
+     object_initialize_child(OBJECT(ss), "clock", &ss->clock, TYPE_ESP32S3_CLOCK);
+@@ -851,8 +880,11 @@
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
+         if (ss->ybx_x4pro_gt911) {
+             DeviceState *touch = DEVICE(ss->ybx_gt911);
++            qemu_irq master_line = ss->ybx_x4pro_sd_power ?
++                qemu_allocate_irq(esp32s3_x4pro_shared_power, ss, 0) :
++                qdev_get_gpio_in_named(touch, "ybx.gt911.master-rail", 0);
+             qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 1,
+-                qdev_get_gpio_in_named(touch, "ybx.gt911.master-rail", 0));
++                master_line);
+             qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 2,
+                 qdev_get_gpio_in_named(touch, "ybx.gt911.power", 0));
+             qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 4,
+@@ -861,6 +893,14 @@
+                 qdev_get_gpio_in_named(touch, "ybx.gt911.int", 0));
+             qdev_connect_gpio_out_named(touch, "ybx.gt911.touch-irq", 0,
+                 qdev_get_gpio_in_named(DEVICE(&ss->gpio), "ybx.gpio-input", 10));
++        }
++        if (ss->ybx_x4pro_sd_power) {
++            if (!ss->ybx_x4pro_gt911) {
++                qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 1,
++                    qdev_get_gpio_in_named(DEVICE(&ss->sdmmc), "ybx.sd-master-rail", 0));
++            }
++            qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 5,
++                qdev_get_gpio_in_named(DEVICE(&ss->sdmmc), "ybx.sd-slot-enable", 0));
+         }
+     }
+ 
+@@ -1084,6 +1124,16 @@
+     ESP32S3_MACHINE(obj)->ybx_x4pro_gt911 = value;
+ }
+ 
++static bool esp32s3_get_ybx_sd_power(Object *obj, Error **errp)
++{
++    return ESP32S3_MACHINE(obj)->ybx_x4pro_sd_power;
++}
++
++static void esp32s3_set_ybx_sd_power(Object *obj, bool value, Error **errp)
++{
++    ESP32S3_MACHINE(obj)->ybx_x4pro_sd_power = value;
++}
++
+ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
+@@ -1103,6 +1153,11 @@
+                                    esp32s3_set_ybx_gt911);
+     object_class_property_set_description(oc, "ybx-x4pro-gt911",
+         "Optional GT911 presence gated by virtual GPIO2 power and GPIO4 reset");
++    object_class_property_add_bool(oc, "ybx-x4pro-sd-power",
++                                   esp32s3_get_ybx_sd_power,
++                                   esp32s3_set_ybx_sd_power);
++    object_class_property_set_description(oc, "ybx-x4pro-sd-power",
++        "Optional X4 Pro native SDMMC card power: GPIO1 HIGH and GPIO5 LOW");
+ }
+ 
+ static const TypeInfo esp32s3_info = {

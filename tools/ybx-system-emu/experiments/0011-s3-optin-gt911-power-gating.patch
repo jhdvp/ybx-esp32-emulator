@@ -1,0 +1,264 @@
+diff --git a/hw/i2c/ybx_x4pro_i2c.c b/hw/i2c/ybx_x4pro_i2c.c
+--- a/hw/i2c/ybx_x4pro_i2c.c
++++ b/hw/i2c/ybx_x4pro_i2c.c
+@@ -11,6 +11,7 @@
+ #include "hw/i2c/i2c.h"
+ #include "hw/qdev-properties.h"
+ #include "sysemu/rtc.h"
++#include "qemu/timer.h"
+ 
+ #define TYPE_YBX_BM8563 "ybx.bm8563"
+ #define TYPE_YBX_CW2017 "ybx.cw2017"
+@@ -211,7 +212,156 @@
+     device_class_set_props(dc, cw2017_properties);
+ }
+ 
++/*
++ * GT911 optional X4 Pro I2C touch presence and power/reset handshake.
++ * No synthetic contact or home-key events are emitted.
++ * The device NACKs until GPIO2 ACTIVE-LOW power and GPIO4 reset
++ * satisfy minimum delay. GPIO10 selects 0x5d (LOW) or 0x14 (HIGH).
++ */
++#define TYPE_YBX_GT911 "ybx.gt911"
++OBJECT_DECLARE_SIMPLE_TYPE(YbxGT911, YBX_GT911)
++
++struct YbxGT911 {
++    I2CSlave parent_obj;
++    bool powered;
++    bool reset_high;
++    bool reset_low_seen;
++    bool interrupt_high;
++    int64_t reset_low_since_ns;
++    int64_t ready_after_ns;
++    uint16_t register_ptr;
++    uint8_t address_bytes;
++    uint8_t address_hi;
++};
++
++static void gt911_power(void *opaque, int pin, int level)
++{
++    YbxGT911 *s = YBX_GT911(opaque);
++    bool powered = !level; /* X4 Pro power rail GPIO2 is active-LOW */
++    if (s->powered != powered) {
++        s->powered = powered;
++        s->reset_low_seen = false;
++        s->ready_after_ns = INT64_MAX;
++    }
++}
++
++static void gt911_reset_pin(void *opaque, int pin, int level)
++{
++    YbxGT911 *s = YBX_GT911(opaque);
++    bool high = !!level;
++    if (s->reset_high == high) {
++        return;
++    }
++    s->reset_high = high;
++    if (!high) {
++        s->reset_low_since_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++        s->reset_low_seen = s->powered;
++        s->ready_after_ns = INT64_MAX;
++    } else if (s->powered && s->reset_low_seen &&
++               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
++               s->reset_low_since_ns >= 2000000LL) {
++        /* INT is sampled at the rising edge of RST. */
++        I2C_SLAVE(s)->address = s->interrupt_high ? 0x14 : 0x5d;
++        s->ready_after_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                            50000000LL;
++    }
++}
++
++static void gt911_int_pin(void *opaque, int pin, int level)
++{
++    YbxGT911 *s = YBX_GT911(opaque);
++    s->interrupt_high = !!level;
++}
++
++static int gt911_event(I2CSlave *slave, enum i2c_event event)
++{
++    YbxGT911 *s = YBX_GT911(slave);
++    if (event == I2C_START_SEND || event == I2C_START_RECV) {
++        if (!s->powered || !s->reset_high ||
++            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->ready_after_ns) {
++            return 1; /* Genuine I2C NACK while unpowered/in reset. */
++        }
++        if (event == I2C_START_SEND) {
++            s->address_bytes = 0;
++        }
++    }
++    return 0;
++}
++
++static uint8_t gt911_recv(I2CSlave *slave)
++{
++    YbxGT911 *s = YBX_GT911(slave);
++    uint8_t data = 0;
++    switch (s->register_ptr) {
++    case 0x8140: data = '9'; break;
++    case 0x8141: data = '1'; break;
++    case 0x8142: data = '1'; break;
++    case 0x8143: data = 0; break;
++    case 0x814e: data = 0; break; /* no contacts, no HOME pad activity */
++    /* 0x8150.. : no touch points unless future input injection is added. */
++    default: break;
++    }
++    s->register_ptr++;
++    return data;
++}
++
++static int gt911_send(I2CSlave *slave, uint8_t value)
++{
++    YbxGT911 *s = YBX_GT911(slave);
++    if (s->address_bytes == 0) {
++        s->address_hi = value;
++        s->address_bytes = 1;
++    } else if (s->address_bytes == 1) {
++        s->register_ptr = (s->address_hi << 8) | value;
++        s->address_bytes = 2;
++    } else {
++        /* A write to 0x814e clears touch-ready and key events.
++         * There are no synthetic touch events in this model. */
++        s->register_ptr++;
++    }
++    return 0;
++}
++
++static void gt911_reset(DeviceState *device)
++{
++    YbxGT911 *s = YBX_GT911(device);
++    s->powered = false;
++    s->reset_high = true; /* virtual board reset line pulled up */
++    s->reset_low_seen = false;
++    s->interrupt_high = true;
++    s->reset_low_since_ns = 0;
++    s->ready_after_ns = INT64_MAX;
++    s->register_ptr = 0;
++    s->address_bytes = 0;
++    I2C_SLAVE(s)->address = 0x5d;
++}
++
++static void gt911_init(Object *obj)
++{
++    YbxGT911 *s = YBX_GT911(obj);
++    qdev_init_gpio_in_named(DEVICE(s), gt911_power, "ybx.gt911.power", 1);
++    qdev_init_gpio_in_named(DEVICE(s), gt911_reset_pin, "ybx.gt911.reset", 1);
++    qdev_init_gpio_in_named(DEVICE(s), gt911_int_pin, "ybx.gt911.int", 1);
++}
++
++static void gt911_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    I2CSlaveClass *ic = I2C_SLAVE_CLASS(klass);
++    ic->event = gt911_event;
++    ic->recv = gt911_recv;
++    ic->send = gt911_send;
++    device_class_set_legacy_reset(dc, gt911_reset);
++}
++
+ static const TypeInfo types[] = {
++    {
++        .name = TYPE_YBX_GT911,
++        .parent = TYPE_I2C_SLAVE,
++        .instance_size = sizeof(YbxGT911),
++        .instance_init = gt911_init,
++        .class_init = gt911_class_init,
++    },
+     {
+         .name = TYPE_YBX_BM8563,
+         .parent = TYPE_I2C_SLAVE,
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -125,6 +125,8 @@
+     ESP32S3UARTState uart[ESP32S3_UART_COUNT];
+     Esp32I2CState i2c[ESP32S3_I2C_COUNT];
+     bool ybx_x4pro_i2c;
++    bool ybx_x4pro_gt911;
++    I2CSlave *ybx_gt911;
+     ESP32S3GPIOState gpio;
+     Esp32s3RngState rng;
+     Esp32S3TWAIState twai;
+@@ -331,6 +333,7 @@
+     Esp32s3SocState esp32s3;
+     DeviceState *flash_dev;
+     bool ybx_x4pro_i2c;
++    bool ybx_x4pro_gt911;
+ };
+ #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
+ 
+@@ -452,6 +455,10 @@
+     if (s->ybx_x4pro_i2c) {
+         i2c_slave_create_simple(s->i2c[0].bus, "ybx.bm8563", 0x51);
+         i2c_slave_create_simple(s->i2c[0].bus, "ybx.cw2017", 0x63);
++    }
++    if (s->ybx_x4pro_gt911) {
++        s->ybx_gt911 = i2c_slave_create_simple(s->i2c[0].bus,
++                                               "ybx.gt911", 0x5d);
+     }
+ 
+     qdev_realize(DEVICE(&s->sdmmc), &s->periph_bus, &error_fatal);
+@@ -610,6 +617,7 @@
+ 
+ static Property esp32s3_soc_properties[] = {
+     DEFINE_PROP_BOOL("ybx-x4pro-i2c", Esp32s3SocState, ybx_x4pro_i2c, false),
++    DEFINE_PROP_BOOL("ybx-x4pro-gt911", Esp32s3SocState, ybx_x4pro_gt911, false),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+@@ -673,6 +681,7 @@
+     object_initialize_child(OBJECT(ms), "soc", &ms->esp32s3, TYPE_ESP32S3_SOC);
+     Esp32s3SocState *ss = ESP32S3_SOC(&ms->esp32s3);
+     qdev_prop_set_bit(DEVICE(ss), "ybx-x4pro-i2c", ms->ybx_x4pro_i2c);
++    qdev_prop_set_bit(DEVICE(ss), "ybx-x4pro-gt911", ms->ybx_x4pro_gt911);
+ 
+     MemoryRegion *dram = g_new(MemoryRegion, 1);
+     const struct MemmapEntry *memmap = esp32s3_memmap;
+@@ -834,6 +843,15 @@
+         sysbus_realize(SYS_BUS_DEVICE(&ss->gpio), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->gpio), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
++        if (ss->ybx_x4pro_gt911) {
++            DeviceState *touch = DEVICE(ss->ybx_gt911);
++            qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 2,
++                qdev_get_gpio_in_named(touch, "ybx.gt911.power", 0));
++            qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 4,
++                qdev_get_gpio_in_named(touch, "ybx.gt911.reset", 0));
++            qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32_GPIO_PIN_OUTPUT, 10,
++                qdev_get_gpio_in_named(touch, "ybx.gt911.int", 0));
++        }
+     }
+ 
+     {
+@@ -1046,6 +1064,16 @@
+     ESP32S3_MACHINE(obj)->ybx_x4pro_i2c = value;
+ }
+ 
++static bool esp32s3_get_ybx_gt911(Object *obj, Error **errp)
++{
++    return ESP32S3_MACHINE(obj)->ybx_x4pro_gt911;
++}
++
++static void esp32s3_set_ybx_gt911(Object *obj, bool value, Error **errp)
++{
++    ESP32S3_MACHINE(obj)->ybx_x4pro_gt911 = value;
++}
++
+ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
+@@ -1058,9 +1086,13 @@
+     object_class_property_add_bool(oc, "ybx-x4pro-i2c",
+                                    esp32s3_get_ybx_i2c,
+                                    esp32s3_set_ybx_i2c);
+-    object_class_property_set_description(
+-        oc, "ybx-x4pro-i2c",
++    object_class_property_set_description(oc, "ybx-x4pro-i2c",
+         "Explicitly simulate BM8563 RTC and CW2017 battery on I2C0");
++    object_class_property_add_bool(oc, "ybx-x4pro-gt911",
++                                   esp32s3_get_ybx_gt911,
++                                   esp32s3_set_ybx_gt911);
++    object_class_property_set_description(oc, "ybx-x4pro-gt911",
++        "Optional GT911 presence gated by virtual GPIO2 power and GPIO4 reset");
+ }
+ 
+ static const TypeInfo esp32s3_info = {

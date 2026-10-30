@@ -1,0 +1,189 @@
+Opt-in QEMU ESP32-S3 cross-core IPI counters (YBX X4 Pro factory-firmware emulation).
+
+Purpose: tell a lost/unimplemented cross-core IPI apart from a task that is simply
+blocked on an unrelated synchronisation object, without changing emulation behaviour.
+Adds read-only counters and the QOM properties that expose them; nothing in the IRQ
+or clock logic reads the new fields.
+
+Properties, device path /machine/soc/clock:
+  ybx-cpu-intr-levels                  latched SYSTEM_CPU_INTR_FROM_CPU_0..3 bits
+  ybx-cpu-intr-<0..3>-sets             register writes that raised each FROM_CPU bit
+  ybx-cpu-intr-<0..3>-clears           register writes that lowered each FROM_CPU bit
+
+Properties, device path /machine/soc/intmatrix:
+  ybx-map-writes                       guest interrupt-matrix programming count
+  ybx-last-map-addr, ybx-last-map-value
+  ybx-cpu<0|1>-asserted                asserted source pulses delivered to a CPU interrupt
+  ybx-cpu<0|1>-unrouted                asserted pulses whose map value matches no extint
+  ybx-cpu<0|1>-from-cpu-asserted       asserted FROM_CPU sources, including those unrouted
+  ybx-cpu<0|1>-from-cpu-default-route  FROM_CPU pulses dropped while still at reset value 6
+  ybx-cpu<0|1>-from-cpu-int            last FROM_CPU map value (CPU interrupt number)
+
+Reading the result (see experiments/0037-agent-crosscore-ipi.md):
+  from-cpu-asserted == 0 and clock sets == 0  guest never requested the IPI: emulator is innocent
+  map-writes == 0 and unrouted > 0            matrix never programmed; QEMU resets the map to 6,
+                                              which is not a valid dc232b external interrupt, so
+                                              the pulse is dropped silently (real HW default is 16)
+  from-cpu-asserted > 0, unrouted == 0       routed IPI reached the CPU; inspect INTSET/INTENABLE and the
+                                              tick drain of xPendingReadyList instead
+
+Status: diagnostic only. Verified with "patch -p1 --dry-run" and "git apply --check" against the
+qemu-rominit-20261029 sources; NOT compiled and NOT runtime-tested. Keep it out of
+apply_qemu_patches.sh (unaccepted); apply manually to a separate QEMU checkout when needed:
+  git -C <qemu-checkout> apply tools/ybx-system-emu/experiments/0043-s3-optin-crosscore-ipi-counters.patch
+
+diff --git a/hw/xtensa/esp32s3_clk.c b/hw/xtensa/esp32s3_clk.c
+--- a/hw/xtensa/esp32s3_clk.c
++++ b/hw/xtensa/esp32s3_clk.c
+@@ -33,9 +33,11 @@
+ {
+     const uint32_t field = FIELD_EX32(value, SYSTEM_CPU_INTR_FROM_CPU_0, CPU_INTR_FROM_CPU_0);
+     if (field) {
++        s->ybx_cpu_intr_sets[index]++;
+         s->levels |= BIT(index);
+         qemu_set_irq(s->irqs[index], 1);
+     } else {
++        s->ybx_cpu_intr_clears[index]++;
+         s->levels &= ~BIT(index);
+         qemu_set_irq(s->irqs[index], 0);
+     }
+@@ -150,6 +152,20 @@
+     for (uint64_t i = 0; i < ESP32S3_SYSTEM_CPU_INTR_COUNT; i++) {
+         sysbus_init_irq(sbd, &s->irqs[i]);
+     }
++
++    /* YBX read-only cross-core IPI diagnosis, never used by device logic */
++    object_property_add_uint32_ptr(obj, "ybx-cpu-intr-levels", &s->levels,
++                                  OBJ_PROP_FLAG_READ);
++    for (int i = 0; i < ESP32S3_SYSTEM_CPU_INTR_COUNT; i++) {
++        char *name = g_strdup_printf("ybx-cpu-intr-%d-sets", i);
++        object_property_add_uint32_ptr(obj, name, &s->ybx_cpu_intr_sets[i],
++                                      OBJ_PROP_FLAG_READ);
++        g_free(name);
++        name = g_strdup_printf("ybx-cpu-intr-%d-clears", i);
++        object_property_add_uint32_ptr(obj, name, &s->ybx_cpu_intr_clears[i],
++                                      OBJ_PROP_FLAG_READ);
++        g_free(name);
++    }
+ }
+ 
+ static void esp32s3_clock_class_init(ObjectClass *klass, void *data)
+diff --git a/hw/xtensa/esp32s3_intc.c b/hw/xtensa/esp32s3_intc.c
+--- a/hw/xtensa/esp32s3_intc.c
++++ b/hw/xtensa/esp32s3_intc.c
+@@ -29,17 +29,35 @@
+ static void esp32s3_intmatrix_irq_handler(void *opaque, int n, int level)
+ {
+     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
++    const bool from_cpu = n >= ETS_FROM_CPU_INTR0_SOURCE &&
++                          n <= ETS_FROM_CPU_INTR3_SOURCE;
+     for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
+         if (s->outputs[i] == NULL) {
+             continue;
+         }
+         int out_index = IRQ_MAP(i, n);
++        bool delivered = false;
+         for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
+             if (s->cpu[i]->env.config->extint[int_index] == out_index) {
+                 qemu_set_irq(s->outputs[i][int_index], level);
++                delivered = true;
+                 break;
+             }
+         }
++        if (level) {
++            if (!delivered) {
++                s->ybx_unrouted[i]++;
++            } else {
++                s->ybx_asserted[i]++;
++            }
++            if (from_cpu) {
++                s->ybx_from_cpu_asserted[i]++;
++                s->ybx_from_cpu_int[i] = out_index;
++                if (!delivered && out_index == INTMATRIX_UNINT_VALUE) {
++                    s->ybx_from_cpu_default[i]++;
++                }
++            }
++        }
+     }
+ }
+ 
+@@ -70,6 +88,9 @@
+     info_report("\x1b[31m[INTC] esp32s3_intmatrix_write  addr = %ld, value=%ld\x1b[0m", addr, value);
+ #endif // INTC_DEBUG
+     Esp32s3IntMatrixState *s = ESP32S3_INTMATRIX(opaque);
++    s->ybx_map_writes++;
++    s->ybx_last_map_addr = addr;
++    s->ybx_last_map_value = value;
+     uint8_t* map_entry = get_map_entry(s, addr);
+     if (map_entry != NULL) {
+         *map_entry = value & 0x1f;
+@@ -118,6 +139,31 @@
+     sysbus_init_mmio(sbd, &s->iomem);
+ 
+     qdev_init_gpio_in(DEVICE(s), esp32s3_intmatrix_irq_handler, ESP32S3_INT_MATRIX_INPUTS);
++
++    static const char *const routes[] = {
++        "asserted", "unrouted", "from-cpu-asserted",
++        "from-cpu-default-route", "from-cpu-int",
++    };
++    object_property_add_uint32_ptr(obj, "ybx-map-writes", &s->ybx_map_writes,
++                                  OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-last-map-addr", &s->ybx_last_map_addr,
++                                  OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-last-map-value", &s->ybx_last_map_value,
++                                  OBJ_PROP_FLAG_READ);
++    for (int i = 0; i < ESP32S3_CPU_COUNT; ++i) {
++        uint32_t *fields[] = {
++            &s->ybx_asserted[i],
++            &s->ybx_unrouted[i],
++            &s->ybx_from_cpu_asserted[i],
++            &s->ybx_from_cpu_default[i],
++            &s->ybx_from_cpu_int[i],
++        };
++        for (size_t r = 0; r < ARRAY_SIZE(routes); ++r) {
++            char *name = g_strdup_printf("ybx-cpu%d-%s", i, routes[r]);
++            object_property_add_uint32_ptr(obj, name, fields[r], OBJ_PROP_FLAG_READ);
++            g_free(name);
++        }
++    }
+ }
+ 
+ static Property esp32s3_intmatrix_properties[] = {
+diff --git a/include/hw/xtensa/esp32s3_clk.h b/include/hw/xtensa/esp32s3_clk.h
+--- a/include/hw/xtensa/esp32s3_clk.h
++++ b/include/hw/xtensa/esp32s3_clk.h
+@@ -59,6 +59,11 @@
+     uint32_t app_cpu_addr;
+     
+     uint32_t sys_ext_dev_enc_dec_ctrl;
++
++    /* YBX read-only diagnosis of guest cross-core IPI traffic. Nothing in the
++     * IRQ or clock logic reads these, so scheduling behavior is unchanged. */
++    uint32_t ybx_cpu_intr_sets[ESP32S3_SYSTEM_CPU_INTR_COUNT];
++    uint32_t ybx_cpu_intr_clears[ESP32S3_SYSTEM_CPU_INTR_COUNT];
+ } ESP32S3ClockState;
+ 
+ typedef struct ESP32S3ClockClass {
+diff --git a/include/hw/xtensa/esp32s3_intc.h b/include/hw/xtensa/esp32s3_intc.h
+--- a/include/hw/xtensa/esp32s3_intc.h
++++ b/include/hw/xtensa/esp32s3_intc.h
+@@ -143,6 +143,19 @@
+     qemu_irq *outputs[ESP32S3_CPU_COUNT];
+     uint8_t irq_map[ESP32S3_CPU_COUNT][ESP32S3_INT_MATRIX_INPUTS];
+ 
++    /* YBX read-only counters: the routing logic never reads them, so behaviour
++     * is unchanged. "unrouted" counts asserted sources whose map value matches
++     * no CPU interrupt; "from_cpu_default" isolates the still-at-reset-default
++     * (6) case for the FROM_CPU sources 79..82. */
++    uint32_t ybx_map_writes;
++    uint32_t ybx_last_map_addr;
++    uint32_t ybx_last_map_value;
++    uint32_t ybx_asserted[ESP32S3_CPU_COUNT];
++    uint32_t ybx_unrouted[ESP32S3_CPU_COUNT];
++    uint32_t ybx_from_cpu_asserted[ESP32S3_CPU_COUNT];
++    uint32_t ybx_from_cpu_default[ESP32S3_CPU_COUNT];
++    uint32_t ybx_from_cpu_int[ESP32S3_CPU_COUNT];
++
+     /* properties */
+     XtensaCPU *cpu[ESP32S3_CPU_COUNT];
+ } Esp32s3IntMatrixState;

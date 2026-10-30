@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+*.bin
+*.elf
+*.img
+*.key
+*.pem
+*.log
+*.qcow2
+build/
+output/
+artifacts/
+qa/

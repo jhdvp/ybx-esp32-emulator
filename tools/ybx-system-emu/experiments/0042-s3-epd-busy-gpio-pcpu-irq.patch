@@ -1,0 +1,178 @@
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -33,6 +33,12 @@
+     uint32_t input_hi;
+     /* Board-specified, opt-in passive pullups for active-LOW buttons. */
+     uint32_t input_pullup_lo;
++    uint32_t status_lo;
++    uint32_t status_hi;
++    uint32_t pin_cfg[ESP32_GPIO_PINS];
++    uint32_t irq_level;
++    uint32_t irq_ack_count;
++    uint32_t pin6_edge_count;
+ } Esp32GpioState;
+ 
+ typedef struct Esp32GpioClass {
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -37,6 +37,18 @@
+ #define GPIO_ENABLE1_W1TC 0x034
+ #define GPIO_IN           0x03c
+ #define GPIO_IN1          0x040
++#define GPIO_STATUS       0x044
++#define GPIO_STATUS_W1TC  0x04c
++#define GPIO_STATUS1      0x050
++#define GPIO_STATUS1_W1TC 0x058
++/* ESP32-S3 ESP-IDF gpio_ll_get_intr_status() uses PCPU_INT, NOT
++ * STATUS; failure to expose this register creates an ISR storm. */
++#define GPIO_PCPU_INT     0x05c
++#define GPIO_PCPU_INT1    0x068
++#define GPIO_PIN_FIRST    0x074
++#define GPIO_PIN_LAST     (GPIO_PIN_FIRST + ESP32_GPIO_PINS * 4)
++#define PIN_TYPE(v)       (((v) >> 7) & 7)
++#define PIN_ENA(v)        (((v) >> 13) & 0x1f)
+ 
+ static void esp32_gpio_notify_outputs(Esp32GpioState *s)
+ {
+@@ -55,6 +67,28 @@
+     }
+ }
+ 
++static void esp32_gpio_update_irq(Esp32GpioState *s)
++{
++    bool asserted = false;
++    for (int n = 0; n < ESP32_GPIO_PINS; ++n) {
++        uint32_t flag = 1U << (n < 32 ? n : n - 32);
++        uint32_t *status = n < 32 ? &s->status_lo : &s->status_hi;
++        uint32_t cfg = s->pin_cfg[n];
++        uint32_t type = PIN_TYPE(cfg);
++        bool high = !!((n < 32 ? s->input_lo : s->input_hi) & flag);
++        if (type == 4 || type == 5) {
++            if ((type == 4 && !high) || (type == 5 && high)) {
++                if (PIN_ENA(cfg)) *status |= flag;
++            } else {
++                *status &= ~flag;
++            }
++        }
++        if ((*status & flag) && (PIN_ENA(cfg) & 1)) asserted = true;
++    }
++    s->irq_level = asserted;
++    qemu_set_irq(s->irq, asserted);
++}
++
+ static void esp32_gpio_inject_input(void *opaque, int n, int level)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+@@ -63,11 +97,25 @@
+     }
+     uint32_t *word = n < 32 ? &s->input_lo : &s->input_hi;
+     uint32_t mask = 1U << (n < 32 ? n : n - 32);
++    bool old_high = !!(*word & mask);
++    bool high = !!level;
+     if (level) {
+         *word |= mask;
+     } else {
+         *word &= ~mask;
+     }
++    if (!s->emulate_outputs) return;
++    uint32_t cfg = s->pin_cfg[n];
++    uint32_t type = PIN_TYPE(cfg);
++    bool edge = (type == 1 && !old_high && high) ||
++                (type == 2 && old_high && !high) ||
++                (type == 3 && old_high != high);
++    if (edge && PIN_ENA(cfg)) {
++        if (n < 32) s->status_lo |= mask;
++        else s->status_hi |= mask;
++        if (n == 6) s->pin6_edge_count++;
++    }
++    if (edge || type == 4 || type == 5) esp32_gpio_update_irq(s);
+ }
+ 
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+@@ -86,7 +134,16 @@
+         case GPIO_IN1:
+             return (s->out_hi & s->enable_hi) |
+                    (s->input_hi & ~s->enable_hi);
+-        default: break;
++        case GPIO_STATUS: return s->status_lo;
++        case GPIO_STATUS1: return s->status_hi;
++        case GPIO_PCPU_INT: return s->status_lo;
++        case GPIO_PCPU_INT1: return s->status_hi;
++        default:
++            if (addr >= GPIO_PIN_FIRST && addr < GPIO_PIN_LAST &&
++                (addr & 3) == 0) {
++                return s->pin_cfg[(addr-GPIO_PIN_FIRST)/4];
++            }
++            break;
+         }
+     }
+     switch (addr) {
+@@ -121,7 +178,23 @@
+     case GPIO_ENABLE1: s->enable_hi = v; break;
+     case GPIO_ENABLE1_W1TS: s->enable_hi |= v; break;
+     case GPIO_ENABLE1_W1TC: s->enable_hi &= ~v; break;
+-    default: return;
++    case GPIO_STATUS_W1TC:
++        s->status_lo &= ~v;
++        s->irq_ack_count++;
++        esp32_gpio_update_irq(s);
++        return;
++    case GPIO_STATUS1_W1TC:
++        s->status_hi &= ~v;
++        s->irq_ack_count++;
++        esp32_gpio_update_irq(s);
++        return;
++    default:
++        if (addr >= GPIO_PIN_FIRST && addr < GPIO_PIN_LAST &&
++            (addr & 3) == 0) {
++            s->pin_cfg[(addr-GPIO_PIN_FIRST)/4] = v;
++            esp32_gpio_update_irq(s);
++        }
++        return;
+     }
+     esp32_gpio_notify_outputs(s);
+ }
+@@ -139,6 +212,10 @@
+     s->enable_lo = s->enable_hi = 0;
+     s->input_lo = s->input_pullup_lo;
+     s->input_hi = 0;
++    s->status_lo = s->status_hi = 0;
++    s->irq_level = s->irq_ack_count = s->pin6_edge_count = 0;
++    memset(s->pin_cfg, 0, sizeof(s->pin_cfg));
++    qemu_set_irq(s->irq, 0);
+     esp32_gpio_notify_outputs(s);
+ }
+ 
+@@ -162,6 +239,12 @@
+                              ESP32_GPIO_PINS);
+     qdev_init_gpio_in_named(DEVICE(s), esp32_gpio_inject_input,
+                             "ybx.gpio-input", ESP32_GPIO_PINS);
++    object_property_add_uint32_ptr(obj, "ybx-gpio-irq-level",
++                                   &s->irq_level, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-gpio-irq-acks",
++                                   &s->irq_ack_count, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-gpio6-edges",
++                                   &s->pin6_edge_count, OBJ_PROP_FLAG_READ);
+ }
+ 
+ static Property esp32_gpio_properties[] = {
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -947,6 +947,14 @@
+         sysbus_realize(SYS_BUS_DEVICE(&ss->gpio), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->gpio), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
++        /* Enable only for opt-in experimental X4 Pro panel; all default S3
++         * machines retain previous GPIO behavior. Both S3 CPU cores read
++         * GPIO_PCPU_INT and share INT_ENA bit0 in this SDK. */
++        if (ss->ybx_x4pro_epd) {
++            sysbus_connect_irq(SYS_BUS_DEVICE(&ss->gpio), 0,
++                               qdev_get_gpio_in(intmatrix_dev,
++                                                ETS_GPIO_INTR_SOURCE));
++        }
+         if (ss->ybx_x4pro_gt911) {
+             DeviceState *touch = DEVICE(ss->ybx_gt911);
+             qemu_irq master_line = ss->ybx_x4pro_sd_power ?

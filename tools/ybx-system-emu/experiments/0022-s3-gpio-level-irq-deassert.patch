@@ -1,0 +1,50 @@
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -68,12 +68,29 @@
+     bool asserted = false;
+     for (int n = 0; n < ESP32_GPIO_PINS; n++) {
+         uint32_t flag = (uint32_t)1 << (n < 32 ? n : n - 32);
+-        bool pending = n < 32 ? !!(s->gpio_status_lo & flag)
+-                               : !!(s->gpio_status_hi & flag);
+-        /* INT_ENA bit0 enables CPU0 normal interrupt (ESP-IDF GPIO). */
+-        if (pending && (GPIO_PIN_INT_ENA(s->pin_config[n]) & 1)) {
++        uint32_t *status = n < 32 ? &s->gpio_status_lo : &s->gpio_status_hi;
++        uint32_t input = n < 32 ? s->input_lo : s->input_hi;
++        bool high = !!(input & flag);
++        uint32_t type = GPIO_PIN_INT_TYPE(s->pin_config[n]);
++        uint32_t ena = GPIO_PIN_INT_ENA(s->pin_config[n]);
++
++        /* Level-triggered GPIO (4=LOW,5=HIGH) follows the live input.
++         * Unlike edge-triggered status (1/2/3), it MUST deassert when
++         * the physical level goes inactive. A latched level interrupt
++         * can trap FreeRTOS CPU1 servicing the SSD1677 BUSY GPIO6
++         * forever after the panel finishes its update. */
++        if (type == 4 || type == 5) {
++            bool active = type == 4 ? !high : high;
++            if (active && ena) {
++                *status |= flag;
++            } else {
++                *status &= ~flag;
++            }
++        }
++        /* INT_ENA bit0 is CPU0 normal interrupt, other bits
++         * belong to NMI/other cores; opt-in model only drives level. */
++        if ((*status & flag) && (ena & 1)) {
+             asserted = true;
+-            break;
+         }
+     }
+     s->irq_level = asserted;
+@@ -111,6 +128,11 @@
+         } else {
+             s->gpio_status_hi |= mask;
+         }
++    }
++    /* A level interrupt must be updated on BOTH transitions. In
++     * particular SSD1677 BUSY GPIO6 HIGH->LOW is not an edge event
++     * for type=HIGH, but it still must deassert the interrupt. */
++    if (triggered || type == 4 || type == 5) {
+         esp32_gpio_refresh_irq(s);
+     }
+ }

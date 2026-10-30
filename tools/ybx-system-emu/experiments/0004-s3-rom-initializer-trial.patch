@@ -1,0 +1,34 @@
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+index 4a24a04..69bd0d6 100644
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -933,6 +933,29 @@ static void esp32s3_machine_init(MachineState *machine)
+         }
+         g_free(rom_binary);
+ 
++        /*
++         * The ROM ELF has initialized writable sections (including
++         * rom_spiflash_legacy_data) which do not belong to the IROM PT_LOAD
++         * segments. A plain instruction-ROM image leaves these pointers zero
++         * and the ROM aborts in spi_dummy_len_fix with LoadProhibited.
++         *
++         * The companion raw image must be extracted from matching local
++         * Espressif ELF section headers; never use a real-device dump.
++         */
++        char *rom_data = qemu_find_file(QEMU_FILE_TYPE_BIOS,
++                                        "esp32s3_rev0_rom_init.bin");
++        if (rom_data == NULL) {
++            error_report("Missing ESP32-S3 ROM data initializers");
++            exit(1);
++        }
++        int data_len = load_image_targphys_as(
++            rom_data, 0x3fcd7000, 0x19000, CPU(&ss->cpu[0])->as);
++        if (data_len != 0x19000) {
++            error_report("Cannot initialize ESP32-S3 ROM data: %s", rom_data);
++            exit(1);
++        }
++        g_free(rom_data);
++
+         if (ESP32S3_CPU_COUNT > 1)
+         {
+             rom_binary = qemu_find_file(QEMU_FILE_TYPE_BIOS, "esp32s3_rev0_rom.bin");

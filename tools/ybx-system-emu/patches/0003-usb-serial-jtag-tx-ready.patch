@@ -1,0 +1,20 @@
+diff --git a/hw/misc/esp32c3_jtag.c b/hw/misc/esp32c3_jtag.c
+index 82ee697..dc2f193 100644
+--- a/hw/misc/esp32c3_jtag.c
++++ b/hw/misc/esp32c3_jtag.c
+@@ -20,6 +20,15 @@ static uint64_t esp32c3_jtag_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     ESP32C3UsbJtagState *s = ESP32C3_JTAG(opaque);
+     (void) s;
++    /* The S3 ROM polls USB_SERIAL_JTAG_EP1_CONF_REG bit 1 for
++     * SERIAL_IN_EP_DATA_FREE. Always returning zero forces its ROM
++     * usb_uart_device_tx_one_char to time out and access an uninitialised
++     * ets_ops_table_ptr, causing a debug exception before SPI boot.
++     * Match the TX-ready status already modelled by esp32c6_jtag.c.
++     */
++    if (addr == 0x04) {
++        return (1U << 1);
++    }
+     return 0;
+ }
+ 

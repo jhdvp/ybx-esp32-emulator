@@ -1,0 +1,50 @@
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -31,6 +31,8 @@
+     qemu_irq pin_out[ESP32_GPIO_PINS];
+     uint32_t input_lo;
+     uint32_t input_hi;
++    /* Board-specified, opt-in passive pullups for active-LOW buttons. */
++    uint32_t input_pullup_lo;
+ } Esp32GpioState;
+ 
+ typedef struct Esp32GpioClass {
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -137,7 +137,8 @@
+     Esp32GpioState *s = ESP32_GPIO(obj);
+     s->out_lo = s->out_hi = 0;
+     s->enable_lo = s->enable_hi = 0;
+-    s->input_lo = s->input_hi = 0;
++    s->input_lo = s->input_pullup_lo;
++    s->input_hi = 0;
+     esp32_gpio_notify_outputs(s);
+ }
+ 
+@@ -169,6 +170,8 @@
+     DEFINE_PROP_UINT32("strap_mode", Esp32GpioState, strap_mode, 0),
+     DEFINE_PROP_BOOL("emulate-output-registers", Esp32GpioState,
+                      emulate_outputs, false),
++    DEFINE_PROP_UINT32("board-input-pullups", Esp32GpioState,
++                       input_pullup_lo, 0),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -770,6 +770,12 @@
+     qdev_prop_set_bit(DEVICE(&ss->gpio), "emulate-output-registers",
+                       ms->ybx_x4pro_i2c || ms->ybx_x4pro_sd_power ||
+                       ms->ybx_x4pro_epd);
++    if (ms->ybx_x4pro_gt911) {
++        /* Physical X4 Pro: left GPIO0, power GPIO3, right GPIO7
++         * active-low with pullups. Simulating zero means keys held! */
++        qdev_prop_set_uint32(DEVICE(&ss->gpio), "board-input-pullups",
++                            (1U << 0) | (1U << 3) | (1U << 7));
++    }
+     object_initialize_child(OBJECT(ss), "rng", &ss->rng, TYPE_ESP32S3_RNG);
+ 
+     object_initialize_child(OBJECT(ss), "clock", &ss->clock, TYPE_ESP32S3_CLOCK);

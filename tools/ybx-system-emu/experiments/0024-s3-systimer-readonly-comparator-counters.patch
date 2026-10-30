@@ -1,0 +1,60 @@
+diff --git a/include/hw/timer/esp_systimer.h b/include/hw/timer/esp_systimer.h
+--- a/include/hw/timer/esp_systimer.h
++++ b/include/hw/timer/esp_systimer.h
+@@ -113,6 +113,10 @@
+     uint32_t conf;
+     ESPSysTimerCounter counter[ESP_SYSTIMER_COUNTER_COUNT];
+     ESPSysTimerComp comparators[ESP_SYSTIMER_COMP_COUNT];
++    /* Read-only QMP diagnosis of actual guest comparator programming.
++     * These counters are not used in scheduling or IRQ logic. */
++    uint32_t ybx_comparator_fires[ESP_SYSTIMER_COMP_COUNT];
++    uint32_t ybx_comparator_reprograms[ESP_SYSTIMER_COMP_COUNT];
+ };
+ 
+ 
+diff --git a/hw/timer/esp_systimer.c b/hw/timer/esp_systimer.c
+--- a/hw/timer/esp_systimer.c
++++ b/hw/timer/esp_systimer.c
+@@ -68,6 +68,7 @@
+     /* Update the counter linked to the comparator */
+     const uint32_t counter_idx = comparator->counter;
+     ESPSysTimerState *s = comparator->systimer;
++    s->ybx_comparator_fires[comparator - s->comparators]++;
+     ESPSysTimerCounter* counter = &s->counter[counter_idx];
+ 
+     if (counter->enabled) {
+@@ -111,6 +112,7 @@
+ 
+     const uint32_t counter_idx = comparator->counter;
+     ESPSysTimerState *s = comparator->systimer;
++    s->ybx_comparator_reprograms[comparator - s->comparators]++;
+     ESPSysTimerCounter* counter = &s->counter[counter_idx];
+ 
+     /* Update the counter to get the latest value */
+@@ -603,6 +605,9 @@
+         comp->systimer = s;
+     }
+     esp_systimer_default_conf(s);
++    memset(s->ybx_comparator_fires, 0, sizeof(s->ybx_comparator_fires));
++    memset(s->ybx_comparator_reprograms, 0,
++           sizeof(s->ybx_comparator_reprograms));
+ }
+ 
+ 
+@@ -627,6 +632,16 @@
+         timer_init_ns(&s->comparators[i].qtimer, QEMU_CLOCK_VIRTUAL, esp_systimer_cb, &s->comparators[i]);
+     }
+     esp_systimer_default_conf(s);
++    for (int i = 0; i < ESP_SYSTIMER_COMP_COUNT; ++i) {
++        char *name = g_strdup_printf("ybx-comparator-%d-fires", i);
++        object_property_add_uint32_ptr(obj, name,
++            &s->ybx_comparator_fires[i], OBJ_PROP_FLAG_READ);
++        g_free(name);
++        name = g_strdup_printf("ybx-comparator-%d-reprograms", i);
++        object_property_add_uint32_ptr(obj, name,
++            &s->ybx_comparator_reprograms[i], OBJ_PROP_FLAG_READ);
++        g_free(name);
++    }
+ }
+ 
+ 

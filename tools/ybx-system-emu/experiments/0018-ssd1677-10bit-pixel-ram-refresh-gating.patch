@@ -1,0 +1,200 @@
+diff --git a/hw/display/ybx_ssd1677.c b/hw/display/ybx_ssd1677.c
+--- a/hw/display/ybx_ssd1677.c
++++ b/hw/display/ybx_ssd1677.c
+@@ -26,12 +26,14 @@
+     memset(s->ram, 0xff, sizeof(s->ram));
+     s->nonwhite_ram = 0;
+     s->x_start = 0;
+-    s->x_end = YBX_EPD_ROW_BYTES - 1;
+-    s->y_start = 0;
+-    s->y_end = YBX_EPD_HEIGHT - 1;
++    /* SSD1677 uses 10-bit *pixel* X coordinates, not byte offsets.
++     * FreeInk's default scan is X increment, Y decrement. */
++    s->x_end = YBX_EPD_WIDTH - 1;
++    s->y_start = YBX_EPD_HEIGHT - 1;
++    s->y_end = 0;
+     s->x = 0;
+-    s->y = 0;
+-    s->data_entry = 0x03;
++    s->y = YBX_EPD_HEIGHT - 1;
++    s->data_entry = 0x01;
+     s->param_len = 0;
+ }
+ static void epd_reset_gpio(void *opaque, int n, int level)
+@@ -59,9 +61,11 @@
+         }
+         break;
+     case 0x44:
+-        if (s->param_len >= 2) {
+-            s->x_start = MIN(s->params[0], YBX_EPD_ROW_BYTES - 1);
+-            s->x_end = MIN(s->params[1], YBX_EPD_ROW_BYTES - 1);
++        if (s->param_len >= 4) {
++            s->x_start = MIN((s->params[1] << 8) | s->params[0],
++                             YBX_EPD_WIDTH - 1);
++            s->x_end = MIN((s->params[3] << 8) | s->params[2],
++                           YBX_EPD_WIDTH - 1);
+         }
+         break;
+     case 0x45:
+@@ -73,8 +77,9 @@
+         }
+         break;
+     case 0x4e:
+-        if (s->param_len >= 1) {
+-            s->x = MIN(s->params[0], YBX_EPD_ROW_BYTES - 1);
++        if (s->param_len >= 2) {
++            s->x = MIN((s->params[1] << 8) | s->params[0],
++                       YBX_EPD_WIDTH - 1);
+         }
+         break;
+     case 0x4f:
+@@ -83,6 +88,11 @@
+                        YBX_EPD_HEIGHT - 1);
+         }
+         break;
++    case 0x22:
++        if (s->param_len >= 1) {
++            s->update_ctrl2 = s->params[0];
++        }
++        break;
+     default:
+         break;
+     }
+@@ -91,37 +101,33 @@
+ {
+     switch (cmd) {
+     case 0x11: return 1;
+-    case 0x44: return 2;
++    case 0x44: return 4;
+     case 0x45: return 4;
+-    case 0x4e: return 1;
++    case 0x4e: return 2;
+     case 0x4f: return 2;
++    case 0x22: return 1;
++    case 0x46: return 1;
+     default: return 0;
+     }
+ }
+ static void epd_advance_ram(YbxSSD1677State *s)
+ {
+-    /* SSD1677 common X-increment/Y-increment mode (data entry 0x03).
+-     * Support X-decrement and Y-decrement for physical scan orientation.
+-     * Configuration register controls each direction independently.
++    /* SSD1677 X is addressed in pixels, one MOSI byte advances 8 X pixels.
++     * FreeInk sets X=0..799, Y=479..0, data_entry=0x01.
+      */
+     bool inc_x = s->data_entry & 1;
+     bool inc_y = s->data_entry & 2;
+-    if (inc_x) {
+-        if (s->x >= s->x_end) {
+-            s->x = s->x_start;
+-            s->y = inc_y ? (s->y < s->y_end ? s->y + 1 : s->y_start) :
+-                           (s->y > s->y_start ? s->y - 1 : s->y_end);
++    bool line_end = inc_x ? (s->x + 8 > s->x_end) :
++                             (s->x < s->x_end + 8);
++    if (line_end) {
++        s->x = s->x_start;
++        if (inc_y) {
++            s->y = s->y < s->y_end ? s->y + 1 : s->y_start;
+         } else {
+-            s->x++;
++            s->y = s->y > s->y_end ? s->y - 1 : s->y_start;
+         }
+     } else {
+-        if (s->x <= s->x_start) {
+-            s->x = s->x_end;
+-            s->y = inc_y ? (s->y < s->y_end ? s->y + 1 : s->y_start) :
+-                           (s->y > s->y_start ? s->y - 1 : s->y_end);
+-        } else {
+-            s->x--;
+-        }
++        s->x = inc_x ? s->x + 8 : s->x - 8;
+     }
+ }
+ static uint32_t epd_transfer(SSIPeripheral *peripheral, uint32_t val)
+@@ -144,13 +150,17 @@
+             timer_del(s->refresh_timer);
+             epd_set_busy(s, false);
+         } else if (byte == 0x20) {
+-            memcpy(s->visible, s->ram, YBX_EPD_SIZE);
+-            s->frames++;
+-            s->nonwhite_visible = 0;
+-            for (int i = 0; i < YBX_EPD_SIZE; ++i) {
+-                s->nonwhite_visible += (s->visible[i] != 0xff);
++            /* 0x20 also powers ON/OFF; CTRL2 bit2 starts the
++             * actual pixel-update waveform. Do not count pure
++             * 0xC0 power-on or 0x03 power-off as displayed frames. */
++            if (s->update_ctrl2 & 0x04) {
++                memcpy(s->visible, s->ram, YBX_EPD_SIZE);
++                s->frames++;
++                s->nonwhite_visible = 0;
++                for (int i = 0; i < YBX_EPD_SIZE; ++i) {
++                    s->nonwhite_visible += (s->visible[i] != 0xff);
++                }
+             }
+-            /* No real waveform. Time-bound virtual BUSY only. */
+             epd_set_busy(s, true);
+             timer_mod(s->refresh_timer,
+                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 350);
+@@ -162,11 +172,18 @@
+     if (need && s->param_len < need) {
+         s->params[s->param_len++] = byte;
+         if (s->param_len == need) {
+-            epd_apply_params(s);
++            if (s->command == 0x46 && byte == 0xf7) {
++                /* SSD1677 auto-write RAM white clear, used by FreeInk init.
++                 * Only accept the known all-white factory initialization. */
++                memset(s->ram, 0xff, YBX_EPD_SIZE);
++                s->nonwhite_ram = 0;
++            } else {
++                epd_apply_params(s);
++            }
+         }
+     } else if (s->command == 0x24) {
+-        if (s->x < YBX_EPD_ROW_BYTES && s->y < YBX_EPD_HEIGHT) {
+-            size_t offset = s->y * YBX_EPD_ROW_BYTES + s->x;
++        if (s->x < YBX_EPD_WIDTH && s->y < YBX_EPD_HEIGHT) {
++            size_t offset = s->y * YBX_EPD_ROW_BYTES + (s->x / 8);
+             if (s->ram[offset] != 0xff) s->nonwhite_ram--;
+             if (byte != 0xff) {
+                 s->nonwhite_ram++;
+@@ -199,6 +216,7 @@
+     s->frames = s->commands = s->data_bytes = s->ram_writes = 0;
+     s->ignored_bytes = s->last_command = s->nonwhite_visible = 0;
+     s->nonwhite_ram_writes = s->command_24_count = s->command_26_count = 0;
++    s->update_ctrl2 = 0;
+     s->command = 0;
+     s->dc_high = true;
+     s->rst_high = true;
+@@ -239,6 +257,8 @@
+                                    &s->command_24_count, OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "cmd26",
+                                    &s->command_26_count, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "update-ctrl2",
++                                   &s->update_ctrl2, OBJ_PROP_FLAG_READ);
+     object_property_add_str(obj, "visible-hex", epd_get_visible_hex, NULL);
+ }
+ static void epd_class_init(ObjectClass *klass, void *data)
+diff --git a/include/hw/display/ybx_ssd1677.h b/include/hw/display/ybx_ssd1677.h
+--- a/include/hw/display/ybx_ssd1677.h
++++ b/include/hw/display/ybx_ssd1677.h
+@@ -29,6 +29,7 @@
+     uint32_t nonwhite_ram_writes;
+     uint32_t command_24_count;
+     uint32_t command_26_count;
++    uint32_t update_ctrl2;
+     uint16_t x_start, x_end, y_start, y_end, x, y;
+     uint8_t command;
+     uint8_t params[5];
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -830,6 +830,8 @@
+                          OBJECT(ss->ybx_epd), "cmd24");
+             object_property_add_alias(OBJECT(ss), "ybx-epd-cmd26",
+                          OBJECT(ss->ybx_epd), "cmd26");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-update-ctrl2",
++                         OBJECT(ss->ybx_epd), "update-ctrl2");
+         }
+     }
+ 
