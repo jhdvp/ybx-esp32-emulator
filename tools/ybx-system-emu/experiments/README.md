@@ -423,3 +423,16 @@ GPIO6 pullup comment), rebuilt and re-tested (`0, 0, 0`). Factory guest
 Home → More → YBX Settings → System settings → Back still matches the accepted
 frame SHAs. Details and evidence:
 `0051-busy-telemetry-reset-verification-20261030.md`.
+
+## 0052 — verification pass over both six-agent batches
+
+All 14 batch reports were re-checked against the tree and against a running
+emulator: host suites (312 / 288 tests), the 0043 EPD model test recompiled,
+SSD1677 + GT911 + telemetry QTest on the rebuilt binary, patch-composition
+guardrails, and the factory guest driven end to end. Batch-1 verdicts:
+acceptance-probe tooling confirmed, its 30 s TCB framing not reproduced;
+cross-core IPI chain confirmed, counters synthetic-only; epd-busy 20 ms
+fallback confirmed twice; freertos-tcb offsets confirmed, live state still
+unproven; qemu-epd-fix re-run; render-pipeline stays rejected. The pass also
+found and fixed a snapshot bug (running tasks were invisible). Matrix, gaps and
+reproduce commands: `0052-six-agent-verification-pass-20261030.md`.
