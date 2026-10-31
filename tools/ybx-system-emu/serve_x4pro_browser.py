@@ -199,7 +199,13 @@ async function poll(){
    const s=await response.json();
    if(!response.ok)throw new Error(s.error||'QEMU read failed');
    ready=Boolean(s.ready);
-   status.textContent=ready?'Ready — tap the display':'Starting guest from the active ROM…';
+   if(ready){status.textContent='Ready — tap the display';}
+   else if(s.boot_failed){
+     status.textContent='The guest did not boot from this ROM (0 frames after '
+       +(s.boot_wait_seconds||0)+' s). Check the image for this chip, or switch '
+       'back to the factory ROM.';
+   }
+   else{status.textContent='Starting guest from the active ROM…';}
    info.textContent='Display updates: '+s.frames+' · Nonwhite bytes: '+s.nonwhite+
      (s.sha256?' · Frame SHA-256: '+s.sha256.slice(0,12)+'…':'');
    if(s.frames!==lastFrame){
@@ -328,6 +334,7 @@ def check_touch(data):
 class FactoryX4Pro:
     tap_wait_seconds = 2.0
     tap_queue_depth = 4
+    BOOT_FAIL_AFTER_SECONDS = 45
     QOM_PATH = "/machine/soc"
     TELEMETRY_COUNTERS = ("busy-rise-edges", "busy-fall-edges",
                           "busy-high-ms", "frames")
@@ -353,6 +360,7 @@ class FactoryX4Pro:
         self.tap_slots = threading.BoundedSemaphore(self.tap_queue_depth)
         self.process = None
         self.client = None
+        self.boot_started_at = time.monotonic()
         self.frame = -1
         self.nonwhite = 0
         self.sha = ""
@@ -395,6 +403,7 @@ class FactoryX4Pro:
         except Exception:
             self._stop_process()
             raise
+        self.boot_started_at = time.monotonic()
 
     def _stop_process(self):
         if self.process is not None and self.process.poll() is None:
@@ -407,6 +416,7 @@ class FactoryX4Pro:
     def _reset_frame_cache(self):
         self.frame = -1
         self.sha = ""
+        self.boot_started_at = time.monotonic()
         self.png = self.blank_png
         self.png_etag = '"blank"'
         self.png_mtime = time.time()
@@ -443,9 +453,14 @@ class FactoryX4Pro:
                 self.png_etag = f'"f{frames}-{self.sha[:16]}"'
                 self.png_mtime = time.time()
             self.frame = frames
+            waited = int(time.monotonic() - self.boot_started_at)
             return {"frames":frames,"monotonic_ms":int(time.monotonic()*1000),
                     "nonwhite":self.nonwhite,
                     "ready":guest_ready_for_touch(frames),
+                    "guest_booted":bool(frames > 0),
+                    "boot_wait_seconds":waited,
+                    "boot_failed":bool(frames == 0
+                                       and waited >= self.BOOT_FAIL_AFTER_SECONDS),
                     "sha256":self.sha,"factory_guest":True,
                     "rom":self.rom_info(),
                     "physical_device":False}

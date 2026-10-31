@@ -419,6 +419,9 @@ class FakeGuest:
         self.rom_switches = []
         self.rom_error = None
         self.rom_list_error = None
+        self.frames = 3
+        self.boot_wait_seconds = 3
+        self.boot_failed = False
 
     def rom_info(self):
         item = next(i for i in self.ROM_ITEMS if i["name"] == self.rom_name)
@@ -431,8 +434,13 @@ class FakeGuest:
     def state(self):
         if self.state_error:
             raise self.state_error
-        return {"frames": 3, "monotonic_ms": 4321, "nonwhite": 1234,
-                "ready": True, "sha256": "0" * 64, "factory_guest": True,
+        return {"frames": self.frames, "monotonic_ms": 4321,
+                "nonwhite": 1234,
+                "ready": guest_ready_for_touch(self.frames),
+                "guest_booted": bool(self.frames > 0),
+                "boot_wait_seconds": self.boot_wait_seconds,
+                "boot_failed": self.boot_failed,
+                "sha256": "0" * 64, "factory_guest": True,
                 "rom": self.rom_info(),
                 "physical_device": False}
 
@@ -643,13 +651,32 @@ class HttpCachingTests(ServerHarnessMixin, unittest.TestCase):
         status, body = self.json_request("GET", "/api/state")
         self.assertEqual(status, 200)
         for key in ("frames", "nonwhite", "ready", "sha256",
-                    "factory_guest", "physical_device", "rom"):
+                    "factory_guest", "physical_device", "rom",
+                    "guest_booted", "boot_wait_seconds", "boot_failed"):
             self.assertIn(key, body)
         self.assertEqual(body["frames"], 3)
         self.assertIsInstance(body["monotonic_ms"], int)
         self.assertEqual(body["rom"]["name"], "factory.bin")
         self.assertEqual(body["rom"]["sha256"], FACTORY_ROM_SHA)
         self.assertTrue(body["rom"]["known_factory_image"])
+
+    def test_state_reports_a_healthy_boot(self):
+        status, body = self.json_request("GET", "/api/state")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["guest_booted"])
+        self.assertFalse(body["boot_failed"])
+
+    def test_state_reports_a_rom_that_never_produced_a_frame(self):
+        """A ROM that does not boot must be visible as such, not as 'loading'."""
+        self.guest.frames = 0
+        self.guest.boot_wait_seconds = 60
+        self.guest.boot_failed = True
+        status, body = self.json_request("GET", "/api/state")
+        self.assertEqual(status, 200)
+        self.assertFalse(body["guest_booted"])
+        self.assertTrue(body["boot_failed"])
+        self.assertEqual(body["boot_wait_seconds"], 60)
+        self.assertFalse(body["ready"])
 
     def test_screen_png_advertises_validators(self):
         status, headers, body = self.full_request("GET", "/screen.png")
