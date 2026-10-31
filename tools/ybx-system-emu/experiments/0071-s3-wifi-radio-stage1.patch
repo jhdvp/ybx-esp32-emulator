@@ -1,0 +1,416 @@
+diff --git a/hw/misc/esp32s3_wifi_stub.c b/hw/misc/esp32s3_wifi_stub.c
+new file mode 100644
+index 0000000..a769533
+--- /dev/null
++++ b/hw/misc/esp32s3_wifi_stub.c
+@@ -0,0 +1,225 @@
++/*
++ * ESP32-S3 opt-in Wi-Fi register stub (YBX emulator research)
++ *
++ * Copyright (c) 2026 YBX emulator batch.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ *
++ * Scope of honesty: this models register STORAGE and event CLEAR semantics
++ * for the modem windows the factory image drives. It is silent on every
++ * hardware completion event (RX done, beacon, TBTT, timer match, key take-
++ * effect), so driver waits on events end in the driver's own timeout, not
++ * in a fabricated success. No interrupt line is connected and no netdev is
++ * attached.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/error-report.h"
++#include "qemu/bitops.h"
++#include "hw/sysbus.h"
++#include "hw/qdev-properties.h"
++#include "hw/misc/esp32s3_wifi_stub.h"
++
++const Esp32s3WifiStubWindowInfo
++    esp32s3_wifi_stub_windows[ESP32S3_WIFI_STUB_WINDOW_COUNT] = {
++    { "modem_coex", 0x60031000, 0x1000 },
++    { "wlan_mac",   0x60033000, 0x1000 },
++    { "tx_crypto",  0x60034000, 0x1000 },
++    { "wdev_low",   0x60035000, 0x007C }, /* stops before the TRNG word */
++    { "wdev_high",  0x60035080, 0x0F80 },
++    { "fe",         0x60006000, 0x1000 },
++};
++
++typedef struct Esp32s3WifiStubMmioCtx {
++    Esp32s3WifiStubState *s;
++    int index;
++} Esp32s3WifiStubMmioCtx;
++
++/* Registers that silicon drives, never the CPU: reading them must return
++ * "no event / clock stopped" forever. Every entry is justified by a factory
++ * literal-pool access (experiments/0060 table):
++ *  0x60033c3c/0x60033c40  hal_mac_interrupt_get_event/_clr_event
++ *  0x60033ca4..0x60033cb0 hal_mac_get_txq_state/_clr_txq_state (drain wait)
++ *  0x6003500c..0x60035020 hal_get_tsf_time/_sta_tsf (TSF counter low/high)
++ *  0x60035118/0x6003511c  hal_pwr_interrupt_get_event/_clr_event
++ */
++typedef struct Esp32s3WifiStubForcedZero {
++    uint32_t start; /* absolute */
++    uint32_t end;   /* absolute, exclusive */
++} Esp32s3WifiStubForcedZero;
++
++static const Esp32s3WifiStubForcedZero forced_zero[] = {
++    { 0x60033c3c, 0x60033c44 },
++    { 0x60033ca4, 0x60033cb0 },
++    { 0x6003500c, 0x60035020 },
++    { 0x60035118, 0x60035120 },
++};
++
++static bool wifi_stub_forced_zero(uint32_t abs_addr, unsigned size)
++{
++    for (size_t i = 0; i < ARRAY_SIZE(forced_zero); ++i) {
++        if (abs_addr >= forced_zero[i].start &&
++            abs_addr + size <= forced_zero[i].end) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static void wifi_stub_tap(Esp32s3WifiStubState *s, const char *kind,
++                          uint32_t abs_addr, uint64_t value, unsigned size)
++{
++    if (!s->tap) {
++        return;
++    }
++    if (!g_hash_table_contains(s->seen, GUINT_TO_POINTER(abs_addr))) {
++        g_hash_table_add(s->seen, GUINT_TO_POINTER(abs_addr));
++        warn_report("[radio-stub] %s 0x%08x = 0x%08" PRIx64 " (size %u)",
++                    kind, abs_addr, value, size);
++    }
++}
++
++static uint64_t esp32s3_wifi_stub_read(void *opaque, hwaddr addr,
++                                       unsigned size)
++{
++    Esp32s3WifiStubMmioCtx *ctx = opaque;
++    Esp32s3WifiStubState *s = ctx->s;
++    const Esp32s3WifiStubWindowInfo *w = &esp32s3_wifi_stub_windows[ctx->index];
++    uint32_t abs = w->base + (uint32_t)addr;
++    uint64_t value = 0;
++
++    if (size == 4 && (abs & 3u) == 0 &&
++        abs >= ESP32S3_WIFI_STUB_STATS_BASE &&
++        abs < ESP32S3_WIFI_STUB_STATS_BASE + ESP32S3_WIFI_STUB_STATS_SIZE) {
++        /* host-side counters are not guest traffic: do not count them */
++        switch (abs - ESP32S3_WIFI_STUB_STATS_BASE) {
++        case 0x00: return ESP32S3_WIFI_STUB_STATS_MAGIC;
++        case 0x04: return ESP32S3_WIFI_STUB_WINDOW_COUNT;
++        case 0x08: return (uint32_t)s->reads;
++        case 0x0c: return (uint32_t)(s->reads >> 32);
++        case 0x10: return (uint32_t)s->writes;
++        case 0x14: return (uint32_t)(s->writes >> 32);
++        case 0x18: return s->last_read_addr;
++        case 0x1c: return s->last_write_addr;
++        default: return 0;
++        }
++    }
++    if (wifi_stub_forced_zero(abs, size)) {
++        s->reads++;
++        s->last_read_addr = abs;
++        wifi_stub_tap(s, "read", abs, 0, size);
++        return 0;
++    }
++    assert(addr + size <= w->size);
++    const uint32_t *word = &s->regs[ctx->index][addr / 4];
++    value = (*word >> ((addr % 4) * 8)) & MAKE_64BIT_MASK(0, size * 8);
++    s->reads++;
++    s->last_read_addr = abs;
++    wifi_stub_tap(s, "read", abs, value, size);
++    return value;
++}
++
++static void esp32s3_wifi_stub_write(void *opaque, hwaddr addr, uint64_t value,
++                                    unsigned size)
++{
++    Esp32s3WifiStubMmioCtx *ctx = opaque;
++    Esp32s3WifiStubState *s = ctx->s;
++    const Esp32s3WifiStubWindowInfo *w = &esp32s3_wifi_stub_windows[ctx->index];
++    uint32_t abs = w->base + (uint32_t)addr;
++
++    if (abs >= ESP32S3_WIFI_STUB_STATS_BASE &&
++        abs < ESP32S3_WIFI_STUB_STATS_BASE + ESP32S3_WIFI_STUB_STATS_SIZE) {
++        return; /* statistics block is read-only */
++    }
++    s->writes++;
++    s->last_write_addr = abs;
++    s->last_write_value = (uint32_t)value;
++    wifi_stub_tap(s, "write", abs, value, size);
++    if (wifi_stub_forced_zero(abs, size)) {
++        return; /* W1C-style clear of an event register that cannot latch */
++    }
++    assert(addr + size <= w->size);
++    uint32_t *word = &s->regs[ctx->index][addr / 4];
++    uint32_t mask = (uint32_t)MAKE_64BIT_MASK(0, size * 8) << ((addr % 4) * 8);
++    *word = (*word & ~mask) | ((uint32_t)(value << ((addr % 4) * 8)) & mask);
++}
++
++static const MemoryRegionOps esp32s3_wifi_stub_ops = {
++    .read = esp32s3_wifi_stub_read,
++    .write = esp32s3_wifi_stub_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 1,
++        .max_access_size = 4,
++        .unaligned = false,
++    },
++    .impl = {
++        .min_access_size = 1,
++        .max_access_size = 4,
++    },
++};
++
++static void esp32s3_wifi_stub_init(Object *obj)
++{
++    Esp32s3WifiStubState *s = ESP32S3_WIFI_STUB(obj);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++
++    s->ctx = g_new0(Esp32s3WifiStubMmioCtx, ESP32S3_WIFI_STUB_WINDOW_COUNT);
++    s->seen = g_hash_table_new(NULL, NULL);
++    for (int i = 0; i < ESP32S3_WIFI_STUB_WINDOW_COUNT; ++i) {
++        s->ctx[i].s = s;
++        s->ctx[i].index = i;
++        memory_region_init_io(&s->mr[i], obj, &esp32s3_wifi_stub_ops,
++                              &s->ctx[i],
++                              g_strdup_printf("esp32s3.wifi_stub.%s",
++                          esp32s3_wifi_stub_windows[i].name),
++                              esp32s3_wifi_stub_windows[i].size);
++        sysbus_init_mmio(sbd, &s->mr[i]);
++    }
++}
++
++static void esp32s3_wifi_stub_reset(DeviceState *dev)
++{
++    Esp32s3WifiStubState *s = ESP32S3_WIFI_STUB(dev);
++
++    memset(s->regs, 0, sizeof(s->regs));
++    s->reads = 0;
++    s->writes = 0;
++    s->last_read_addr = 0;
++    s->last_write_addr = 0;
++    s->last_write_value = 0;
++    g_hash_table_remove_all(s->seen);
++}
++
++static Property esp32s3_wifi_stub_properties[] = {
++    DEFINE_PROP_BOOL("x-radio-tap", Esp32s3WifiStubState, tap, false),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void esp32s3_wifi_stub_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    device_class_set_legacy_reset(dc, esp32s3_wifi_stub_reset);
++    device_class_set_props(dc, esp32s3_wifi_stub_properties);
++    /* Deliberately not a netdev-capable device; see header scope note. */
++    dc->user_creatable = false;
++}
++
++static const TypeInfo esp32s3_wifi_stub_info = {
++    .name = TYPE_ESP32S3_WIFI_STUB,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(Esp32s3WifiStubState),
++    .instance_init = esp32s3_wifi_stub_init,
++    .class_init = esp32s3_wifi_stub_class_init,
++};
++
++static void esp32s3_wifi_stub_register_types(void)
++{
++    type_register_static(&esp32s3_wifi_stub_info);
++}
++
++type_init(esp32s3_wifi_stub_register_types)
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 0ac4b77..37f679d 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -180,6 +180,7 @@ system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files(
+   'esp32c3_jtag.c',
+   'esp32s3_rtc_cntl.c',
+   'esp32s3_rng.c',
++  'esp32s3_wifi_stub.c',
+   'esp32s3_pms.c',
+   'esp_hmac.c',
+   'esp32s3_hmac.c'
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+index 18fb7ca..5deba12 100644
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -52,6 +52,7 @@
+ #include "hw/misc/esp32s3_cache.h"
+ #include "hw/char/esp32s3_uart.h"
+ #include "hw/misc/esp32s3_rng.h"
++#include "hw/misc/esp32s3_wifi_stub.h"
+ 
+ #include "hw/nvram/esp32s3_efuse.h"
+ #include "hw/xtensa/esp32s3_clk.h"
+@@ -131,10 +132,12 @@ typedef struct Esp32s3SocState {
+     bool ybx_x4pro_sd_power;
+     bool ybx_x4pro_spi2;
+     bool ybx_x4pro_epd;
++    bool ybx_x4pro_wifi_stub;
+     DeviceState *ybx_epd;
+     I2CSlave *ybx_gt911;
+     ESP32S3GPIOState gpio;
+     Esp32s3RngState rng;
++    Esp32s3WifiStubState wifi_stub;
+     Esp32S3TWAIState twai;
+ 
+     Esp32s3RtcCntlState rtc_cntl;
+@@ -353,6 +356,7 @@ struct Esp32s3MachineState {
+     bool ybx_x4pro_sd_power;
+     bool ybx_x4pro_spi2;
+     bool ybx_x4pro_epd;
++    bool ybx_x4pro_wifi_stub;
+ };
+ #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
+ 
+@@ -655,6 +659,8 @@ static Property esp32s3_soc_properties[] = {
+     DEFINE_PROP_BOOL("ybx-x4pro-gt911", Esp32s3SocState, ybx_x4pro_gt911, false),
+     DEFINE_PROP_BOOL("ybx-x4pro-sd-power", Esp32s3SocState,
+                      ybx_x4pro_sd_power, false),
++    DEFINE_PROP_BOOL("ybx-x4pro-wifi-stub", Esp32s3SocState,
++                     ybx_x4pro_wifi_stub, false),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+@@ -735,6 +741,7 @@ static void esp32s3_machine_init(MachineState *machine)
+                       ms->ybx_x4pro_sd_power);
+     ss->ybx_x4pro_spi2 = ms->ybx_x4pro_spi2;
+     ss->ybx_x4pro_epd = ms->ybx_x4pro_epd;
++    ss->ybx_x4pro_wifi_stub = ms->ybx_x4pro_wifi_stub;
+     if (ms->ybx_x4pro_epd && !ms->ybx_x4pro_spi2) {
+         error_report("X4 Pro EPD requires ybx-x4pro-spi2=on");
+         exit(1);
+@@ -1008,6 +1015,24 @@ static void esp32s3_machine_init(MachineState *machine)
+ 
+     }
+ 
++    /* Opt-in modem register stub: coherent register storage and always-empty
++     * event registers for the windows the factory image drives. Maps over
++     * esp32s3.iomem at equal priority, exactly like every other peripheral;
++     * the WDEV split keeps the TRNG word (0x6003507c) owned by the RNG.
++     * No interrupt is wired: ETS_WIFI_MAC_INTR_SOURCE stays with open_eth. */
++    if (ss->ybx_x4pro_wifi_stub) {
++        object_initialize_child(OBJECT(ss), "wifi_stub", &ss->wifi_stub,
++                                TYPE_ESP32S3_WIFI_STUB);
++        qdev_realize(DEVICE(&ss->wifi_stub), &ss->periph_bus, &error_fatal);
++        for (int i = 0; i < ESP32S3_WIFI_STUB_WINDOW_COUNT; ++i) {
++            const Esp32s3WifiStubWindowInfo *winfo =
++                &esp32s3_wifi_stub_windows[i];
++            memory_region_add_subregion_overlap(
++                sys_mem, winfo->base,
++                sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->wifi_stub), i), 0);
++        }
++    }
++
+ 
+     /* GDMA Realization */
+     {
+@@ -1251,6 +1276,15 @@ static void esp32s3_set_ybx_epd(Object *obj, bool value, Error **errp)
+     ESP32S3_MACHINE(obj)->ybx_x4pro_epd = value;
+ }
+ 
++static bool esp32s3_get_ybx_wifi_stub(Object *obj, Error **errp)
++{
++    return ESP32S3_MACHINE(obj)->ybx_x4pro_wifi_stub;
++}
++static void esp32s3_set_ybx_wifi_stub(Object *obj, bool value, Error **errp)
++{
++    ESP32S3_MACHINE(obj)->ybx_x4pro_wifi_stub = value;
++}
++
+ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
+@@ -1285,6 +1319,12 @@ static void esp32s3_machine_class_init(ObjectClass *oc, void *data)
+                                    esp32s3_set_ybx_epd);
+     object_class_property_set_description(oc, "ybx-x4pro-epd",
+         "Experimental SPI2 SSD1677 RAM/refresh model, not real panel waveform");
++    object_class_property_add_bool(oc, "ybx-x4pro-wifi-stub",
++                                   esp32s3_get_ybx_wifi_stub,
++                                   esp32s3_set_ybx_wifi_stub);
++    object_class_property_set_description(oc, "ybx-x4pro-wifi-stub",
++        "Opt-in modem register stub: coherent regs, empty events, access tap; "
++        "no radio, no association, no packets");
+ }
+ 
+ static const TypeInfo esp32s3_info = {
+diff --git a/include/hw/misc/esp32s3_wifi_stub.h b/include/hw/misc/esp32s3_wifi_stub.h
+new file mode 100644
+index 0000000..7fda5c4
+--- /dev/null
++++ b/include/hw/misc/esp32s3_wifi_stub.h
+@@ -0,0 +1,63 @@
++/*
++ * ESP32-S3 opt-in Wi-Fi register stub (YBX emulator research)
++ *
++ * Copyright (c) 2026 YBX emulator batch.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ *
++ * NOT a radio. The device gives the modem register windows a coherent
++ * read/write model (silicon-like register storage, real get/clear event
++ * semantics that always report "no event") and counts every access. It
++ * never raises an interrupt, never ticks a TSF, never delivers a frame and
++ * therefore can never claim association, scan or a key install completed.
++ */
++
++#pragma once
++
++#include "hw/hw.h"
++#include "hw/sysbus.h"
++
++#define TYPE_ESP32S3_WIFI_STUB "misc.esp32s3.wifi_stub"
++OBJECT_DECLARE_SIMPLE_TYPE(Esp32s3WifiStubState, ESP32S3_WIFI_STUB)
++
++/* Register windows the factory X4 Pro image drives (measured from its own
++ * l32r literal pools; see tools/ybx-system-emu/experiments/0060). The WDEV
++ * window is split around ESP32S3_RNG_BASE (0x6003507c) so the existing TRNG
++ * device keeps ownership of those 4 bytes. */
++#define ESP32S3_WIFI_STUB_WINDOW_COUNT 6
++
++typedef struct Esp32s3WifiStubWindowInfo {
++    const char *name;
++    uint32_t base;
++    uint32_t size;
++} Esp32s3WifiStubWindowInfo;
++
++extern const Esp32s3WifiStubWindowInfo
++    esp32s3_wifi_stub_windows[ESP32S3_WIFI_STUB_WINDOW_COUNT];
++
++/* Statistics block, mapped inside the WDEV_HIGH window. Host-side
++ * observability only: the factory image never touches 0x60035f00 (the
++ * highest literal address measured in WDEV is 0x6003511c). */
++#define ESP32S3_WIFI_STUB_STATS_BASE 0x60035f00
++#define ESP32S3_WIFI_STUB_STATS_SIZE 0x20
++#define ESP32S3_WIFI_STUB_STATS_MAGIC 0x59425230 /* bytes 'Y' 'B' 'R' '0' */
++
++#define ESP32S3_WIFI_STUB_MAX_WORDS 1024
++
++typedef struct Esp32s3WifiStubState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion mr[ESP32S3_WIFI_STUB_WINDOW_COUNT];
++    uint32_t regs[ESP32S3_WIFI_STUB_WINDOW_COUNT][ESP32S3_WIFI_STUB_MAX_WORDS];
++    struct Esp32s3WifiStubMmioCtx *ctx; /* window index for each mr[] */
++
++    bool tap;                 /* log first touch of each register word */
++    uint64_t reads;
++    uint64_t writes;
++    uint32_t last_read_addr;  /* absolute address */
++    uint32_t last_write_addr;
++    uint32_t last_write_value;
++    void *seen;               /* GHashTable of already-tapped addresses */
++} Esp32s3WifiStubState;
