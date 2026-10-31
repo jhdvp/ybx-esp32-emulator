@@ -63,3 +63,13 @@ docker run --rm --platform linux/arm64 -v $DST:/src -w /src/build-ybx \
   ybx-qemu-builder:20261029 ninja -j2 qemu-system-xtensa
 shasum -a 256 $DST/build-ybx/qemu-system-xtensa   # f65db0a7…8236
 ```
+
+## Switched to the live emulator (owner decision, 2026-10-31)
+
+The main browser instance now runs this kernel: the container reports
+`f65db0a7…` inside `/qemu/build-ybx/qemu-system-xtensa`, the factory image
+boots to Home `e79c2ad5…` with balanced BUSY counters (rise 4 / fall 4,
+high-ms 1402 ≈ 4 × 350 ms), stock CrossPoint 2.0.0rc still boots via the picker
+(`78e74345…`), and the factory image comes back cleanly afterwards.
+Rollback trees: `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only) and
+`qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068).
