@@ -1,7 +1,7 @@
-# YBX ESP32 emulator — status snapshot, 2026-10-31
+# YBX ESP32 emulator — status snapshot, 2026-11-01
 
 This file is the consolidated result of every agent batch and every fix up to
-2026-10-31. It is meant to be read instead of the individual experiment
+2026-11-01. It is meant to be read instead of the individual experiment
 reports; each row links to the evidence.
 
 ## The live emulator
@@ -13,7 +13,7 @@ reports; each row links to the evidence.
 | Live binary SHA-256 | `f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236` |
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
 | Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
-| Host tests | 672 tests, 10 skipped |
+| Host tests | 839 tests, 10 skipped (with the companion firmware artifacts present) |
 | Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
@@ -23,14 +23,16 @@ reports; each row links to the evidence.
 | Boot the factory YBX image and paint | ✅ verified (Home `e79c2ad5…`) |
 | Boot stock CrossPoint 2.0.0rc and 1.6.5 | ✅ verified (Home `78e743450b8f…` / `9efb6cf59096…`) |
 | Boot local YBX builds | ✅ verified |
-| Boot inkMOD 1.1.10 | ⚠️ starts, paints nothing (UART shows only the ROM) |
+| Boot inkMOD 1.1.10 | ⚠️ starts, paints nothing; stop point traced to the IPC/RTC sleep handshake |
 | Touch (GT911), navigation, reboot | ✅ verified end to end with frame SHA gates |
 | E-Ink BUSY telemetry in the browser | ✅ `/api/telemetry`, balanced edges, 350 ms windows |
 | SSD1677 deep sleep / split windows / BUSY around reset | ✅ modelled (0069), defaults unchanged |
 | Guest UART console in the browser | ✅ `/api/uart` + page panel |
 | Choose ROM and firmware images from folders | ✅ two in-page pickers, byte-validated, provenance marked |
 | Reproducible build | ✅ composition + clean-room container build |
-| Wi-Fi / 802.11 | ❌ not emulated. Stage 1 register stub exists, off by default |
+| Wi-Fi / 802.11 | ❌ not emulated. Stage 1 register stub exists, off by default; measured to change nothing at boot |
+| Virtual SD card contents | ✅ FAT16 card read back out-of-band; library index and EPUB cache verified |
+| Scripted CrossPoint navigation | ✅ measured tap plan + frame-SHA acceptance runner |
 
 ## Agent batches — what was accepted, what was not
 
@@ -64,6 +66,18 @@ error).
 | repro-build-e2e | **0072**: clean-room build executed end to end |
 | boot-matrix | **0073**: measured boot table tool |
 
+### Batch 5 — twelve lanes (2026-10-31 → 11-01)
+| Lane | Result |
+|---|---|
+| wifi-stub-effect | **0081**: refuted the brief's own claim — the stub absorbs exactly one word (`0x60006090`, PHY/RTC bring-up) and returns the same `0` as the catch-all, so it cannot change the boot outcome. Narrowing patch proposed, **not applied** to the shipped kernel |
+| crosspoint-nav + cp-nav-runner | **0082**: six-step CrossPoint 2.0.0rc tap plan gated on the real frame SHA, with an HTTP acceptance runner that requires an explicit `--base-url` |
+| panel-matrix | **0083**: every published asset judged by its bytes — the `x3-x4` images are **ESP32-C3** (`chip_id 0x0005`) and cannot boot on our ESP32-S3 machine; the S3 siblings differ only in panel wiring |
+| sd-storage | **0084**: reads the virtual card back out-of-band — the factory image writes only `/.crosspoint/library.idx`, CrossPoint really parses an EPUB and caches it (`book.bin`, `sections/0.bin`, `progress.bin`), the pristine image never changes |
+| sleep-wake + sleep-acceptance | **0085 / 0091**: QMP probe + replayable acceptance for `0x10` deep sleep, byte rejection and wake-by-hardware-reset. **Marked pending a live capture** — the lane only compiled the probe |
+| inkmod-hang | register-level tracer for the paint-less inkMOD boot: CPU1 polls `RTC_CNTL_INT_RAW` for SLP_WAKEUP/SLP_REJECT while CPU0 is parked in `esp_ipc_isr_waiting_for_finish_cmd`, panel sees zero commands. Probe + 24 tests merged, the lane was killed before writing its report |
+| panel-support, inkmod-fix, wifi-stage2 | **no output** — exited `rc=1` (quota/provider), nothing to review |
+| library-browse | killed mid-run with a 575-line untested tool; **held out of the repo**, task re-queued |
+
 ## Orchestrator fixes on top of the agent work
 
 | Fix | Why |
@@ -81,14 +95,21 @@ error).
 ## Honest open items
 
 1. **Wi-Fi is not emulated.** The Stage 1 stub answers its register inventory
-   with `ybx-x4pro-wifi-stub=on`, but it does not unblock stock CrossPoint, and
-   enabling it changes that image's early boot path; it stays opt-in and needs
-   its own investigation. No scan, association, address, DHCP or TLS exists.
-2. **inkMOD does not reach its UI.** It prints only the ROM lines and paints
-   nothing; the cause is not yet known.
-3. **Custom firmware coverage is narrow.** Three upstream builds and two local
-   builds were exercised; other panels (X3, X4C, sticky, Picco) are untested.
-4. **Physical E-Ink waveform, sleep/resume and power are not validated** on a
+   with `ybx-x4pro-wifi-stub=on` and stays opt-in. 0081 measured that it
+   changes nothing observable at boot for CrossPoint or the factory image, so
+   the earlier "the stub hangs the guest earlier" note was wrong and is
+   retired here. No scan, association, address, DHCP or TLS exists.
+2. **inkMOD starts but paints nothing.** 0081 narrowed the symptom to the
+   sleep/IPC handshake (CPU0 waits for an IPC finish command that never
+   arrives while CPU1 polls RTC sleep bits). That is a signature, not a fix:
+   the register model that should answer it is not built yet.
+3. **Sleep/wake acceptance has no live capture.** The QOM counters exist in the
+   shipped kernel and the probe is written, but nobody has run it against a
+   guest yet — see the intake notes in 0085 / 0091.
+4. **The 0081 narrowing patch is unapplied.** The shipped stub still claims
+   4 KiB windows; the tighter measured ranges need their own build, boot
+   matrix and acceptance-SHA re-check before they can enter the chain.
+5. **Physical E-Ink waveform, sleep/resume and power are not validated** on a
    real device — the model is host-side and QTest-side only.
 
 ## Reproduce the whole check
