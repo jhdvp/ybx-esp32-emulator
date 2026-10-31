@@ -177,6 +177,8 @@ button:disabled{opacity:.45;cursor:default}
 h2{font-size:15px;margin:20px 0 6px}
 select{width:100%;padding:9px;border-radius:6px;border:1px solid #a8a79e;font-size:13px;background:#fff;color:#171715}
 .romerror{color:#8c2f2f;font-size:13px}
+#uart{max-height:180px;overflow:auto;background:#111;color:#ddd;padding:8px;
+      font:12px/1.35 ui-monospace,Menlo,monospace;white-space:pre-wrap}
 small{color:#66665e;display:block;margin-top:11px;line-height:1.6}
 @media(max-width:680px){body{align-items:start}main{display:flex;flex-direction:column;align-items:center;padding:12px;gap:16px}.device{padding:12px;width:min(100%,480px)}.details{width:min(100%,480px)}}
 </style></head><body><main>
@@ -203,6 +205,9 @@ not an HTML mockup. Tap directly on the reader screen to send a
 <p><button id="loadfw" disabled>Load firmware</button></p>
 <p id="fwactive"><small>Active firmware: loading…</small></p>
 <p id="fwerror" class="romerror" hidden></p>
+<h2>Guest console</h2>
+<p id="uartinfo"><small>UART0 tail: loading…</small></p>
+<pre id="uart">(no guest output yet)</pre>
 <p><strong>Wi-Fi radio is not emulated.</strong> Join a Network,
 Calibre Wireless and Create Hotspot cannot connect from this factory guest.
 Attempting network setup may stop its interface responding; use
@@ -223,6 +228,7 @@ const romList=document.getElementById('romlist'),loadRom=document.getElementById
 const romActive=document.getElementById('romactive'),romError=document.getElementById('romerror');
 const fwList=document.getElementById('fwlist'),loadFw=document.getElementById('loadfw');
 const fwActive=document.getElementById('fwactive'),fwError=document.getElementById('fwerror');
+const uartBox=document.getElementById('uart'),uartInfo=document.getElementById('uartinfo');
 let ready=false,lastFrame=-1,busy=false,ticks=0,romLoaded=false,romBusy=false;
 let fwLoaded=false,fwBusy=false;
 async function poll(){
@@ -399,7 +405,19 @@ loadFw.addEventListener('click',async function(){
  }catch(e){fwError.textContent='Load firmware failed: '+e.message;fwError.hidden=false}
  finally{fwBusy=false;loadFw.disabled=!fwLoaded||!fwList.value;poll()}
 });
-poll();loadRomList();loadFwList();setInterval(poll,1000);
+async function pollUart(){
+ try{
+   const response=await fetch('/api/uart?tail=4096',{cache:'no-store'});
+   const u=await response.json();
+   if(!response.ok)throw new Error(u.error||'UART read failed');
+   if(!u.available){uartInfo.textContent='UART0 tail: '+(u.error||'empty');uartBox.textContent='';return}
+   uartInfo.textContent='UART0 tail: '+u.bytes+' bytes total, showing the last '+u.limit;
+   uartBox.textContent=u.tail;
+   uartBox.scrollTop=uartBox.scrollHeight;
+ }catch(e){uartInfo.textContent='UART0 tail: unavailable ('+e.message+')'}
+}
+poll();loadRomList();loadFwList();pollUart();
+setInterval(poll,1000);setInterval(pollUart,3000);
 })();
 </script></body></html>"""
 
@@ -432,6 +450,7 @@ class FactoryX4Pro:
     FW_LIST_LIMIT = 64
     FW_MAX_HASH_BYTES = 64 * 1024 * 1024
     FW_FLASH_FILENAME_IN_WORKDIR = "flash.bin"
+    UART_TAIL_MAX = 16384
     FW_SD_FILENAME_IN_WORKDIR = "sd.img"
 
     def __init__(self, args):
@@ -489,7 +508,8 @@ class FactoryX4Pro:
             "ybx-x4pro-epd=on",
             "-m","8M", "-global","ssi_psram.is_octal=on",
             "-nographic","-monitor","none",
-            "-serial","null","-serial","null","-serial","null","-serial","null",
+            "-serial",f"file:{t/'uart0.log'}",
+            "-serial","null","-serial","null","-serial","null",
             "-qmp",f"unix:{t/'qmp.sock'},server=on,wait=off",
             "-L",str(t/"rom"),
             "-drive",f"file={t/'flash.bin'},if=mtd,format=raw",
@@ -746,6 +766,33 @@ class FactoryX4Pro:
                 "provenance": provenance,
                 "provenance_note": PROVENANCE_LABELS[provenance],
                 "known_factory_image": provenance == "factory-flash"}
+
+    def uart_tail(self, limit=None):
+        """Read the tail of the guest's UART0 log (read-only, bounded).
+
+        QEMU writes the first serial port to workdir/uart0.log. A guest that
+        fails to boot prints there before it ever paints, so this is the only
+        evidence some images produce.
+        """
+        try:
+            wanted = int(limit) if limit is not None else self.UART_TAIL_MAX
+        except (TypeError, ValueError):
+            raise BadRequestError("tail must be an integer byte count")
+        if wanted <= 0:
+            raise BadRequestError("tail must be positive")
+        wanted = min(wanted, self.UART_TAIL_MAX)
+        path = self.workdir / "uart0.log"
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return {"available": False, "bytes": 0, "tail": "",
+                    "error": "the guest has not printed anything yet"}
+        with path.open("rb") as handle:
+            start = max(0, size - wanted)
+            handle.seek(start)
+            data = handle.read()
+        return {"available": True, "bytes": size, "since_byte": start,
+                "limit": wanted, "tail": data.decode("utf-8", "replace")}
 
     def firmwares(self):
         """List candidate firmware images in firmware_dir (read-only).
@@ -1059,6 +1106,19 @@ def make_handler(emu):
                     self.response_json(200,emu.roms())
                 elif path == "/api/firmware":
                     self.response_json(200,emu.firmwares())
+                elif path == "/api/uart":
+                    tail = None
+                    if "?" in self.path:
+                        query = self.path.split("?", 1)[1]
+                        for part in query.split("&"):
+                            if part.startswith("tail="):
+                                tail = part.split("=", 1)[1]
+                    try:
+                        self.response_json(200, emu.uart_tail(tail))
+                    except BadRequestError as exc:
+                        self.response_json(exc.http_status,
+                                           {"error": str(exc),
+                                            "type": exc.kind})
                 elif path == "/screen.png":
                     self.serve_screen()
                 else:
