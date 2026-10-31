@@ -14,9 +14,23 @@ if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
   echo "Invalid port; use 1024..65535" >&2
   exit 2
 fi
-if ! python3 -c 'import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if ip.version == 4 and ip.is_private and not ip.is_unspecified else 1)' "$BIND_IP"; then
+if ! python3 -c 'import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); ok=ip.version==4 and not ip.is_unspecified and not ip.is_link_local and (ip.is_loopback or ip.is_private); sys.exit(0 if ok else 1)' "$BIND_IP"; then
   echo "Refusing non-private or invalid HTTP bind address: $BIND_IP" >&2
+  echo "Only IPv4 loopback (127.0.0.1) or private LAN ranges are allowed;" >&2
+  echo "public, link-local and IPv6 binds are rejected." >&2
   exit 2
+fi
+if [[ "$BIND_IP" != "127.0.0.1" ]]; then
+  {
+    echo "############################################################"
+    echo "# WARNING: exposing the YBX browser bridge on $BIND_IP:$PORT"
+    echo "# This HTTP bridge has NO authentication and NO TLS."
+    echo "# Anyone who can route to this address can watch the screen,"
+    echo "# inject GT911 taps and reboot the virtual reader."
+    echo "# Prefer the default 127.0.0.1, or forward over SSH:"
+    echo "#   ssh -L $PORT:127.0.0.1:$PORT <host>"
+    echo "############################################################"
+  } >&2
 fi
 for file in "$QEMU_ROOT/build-ybx/qemu-system-xtensa" \
             "$QA_ROOT/s3-full-rom-generator-test.bin" \
