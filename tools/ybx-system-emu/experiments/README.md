@@ -436,3 +436,53 @@ fallback confirmed twice; freertos-tcb offsets confirmed, live state still
 unproven; qemu-epd-fix re-run; render-pipeline stays rejected. The pass also
 found and fixed a snapshot bug (running tasks were invisible). Matrix, gaps and
 reproduce commands: `0052-six-agent-verification-pass-20261030.md`.
+
+## 0060 — Wi-Fi radio: factory register accesses pinned, non-fake stub proposed
+
+`0060-batch3-wifi-radio.md` inventories the radio windows the factory X4 Pro
+image actually touches (WIFI_MAC, WDEV, FE, MODEM_COEX, crypto) from the ELF
+literal pools and pins the numbers in host tests. `0060-s3-wifi-radio-model.patch`
+proposes an opt-in device that freezes status semantics instead of faking an
+association; it applies cleanly to the pinned checkout but is not in the running
+binary. The radio is still not emulated: no frame, scan, association, address,
+DHCP or TLS is produced. Staged roadmap: register stub -> scan -> auth/crypto ->
+DHCP/IP over slirp -> TLS -> TSF/coex.
+
+## 0061 — SSD1677 waveform, deep sleep and BUSY around reset
+
+`0061-batch3-epd-waveform.md` characterises the three known panel gaps in a
+host model that mirrors `ybx_ssd1677.c` line by line: one 350 ms window for
+both power-on and pixel refresh, no state for the deep-sleep command 0x10, and
+BUSY driven low on reset where a real panel trails it high.
+`0061-ssd1677-waveform-sleep.patch` proposes the fix and applies cleanly to the
+pinned checkout; the running emulator still uses the shipped model.
+
+## 0062 — multi-step GUI navigation acceptance
+
+`0062-batch3-nav-automation.md` makes the acceptance chain runnable: Home ->
+More -> YBX Settings -> System settings -> Back with the measured taps
+(350,760), (240,453), (210,679), (35,61), a screen predicate and an expected
+SSD1677 SHA per step, plus failure diagnostics. Browser mode needs an explicit
+`--base-url` so it can never fall onto the shared instance by accident. The
+runner was executed against the live instance: 4/4 steps passed with the
+accepted SHA chain.
+
+## 0063 — reproducible QEMU composition and build
+
+`0063-batch3-repro-build.md` and `build_reproducible_qemu.sh` compose the
+audited chain (0042 + 0037 + 0043 + 0051) from the pinned base `febae18` into a
+fresh tree, sign the sources and patches, and can build
+`qemu-system-xtensa` inside the pinned image. `check_qemu_patch_composition.py`
+now treats the telemetry patches as part of the verified set and pins the
+current binary SHA. Composition and manifest comparison are verified; the
+container build is opt-in and has not been run end to end yet.
+
+## 0064 — browser bridge hardening
+
+`0064-batch3-browser-hardening.md` adds a read-only `/api/telemetry` endpoint
+(BUSY edges, BUSY duration, frame counters, frame SHA - unavailable is
+reported as unavailable, never as zero), ETag/Last-Modified caching on
+`/screen.png` with 304 replies, a bounded and serialised tap queue with typed
+400/429/503 answers, and a stricter private-bind predicate with a loud
+no-authentication warning. Verified against the running instance: live counter
+values and a 304 reply.

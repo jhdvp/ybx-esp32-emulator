@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/host-macOS%20%2B%20Docker-586D70?style=flat-square)
 ![Guest](https://img.shields.io/badge/guest-ESP32--S3%20%2F%20ESP32--C3-567965?style=flat-square)
 [![Host checks](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml/badge.svg)](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml)
-![Tests](https://img.shields.io/badge/local%20tests-281%20pass%20%7C%207%20skip-567965?style=flat-square)
+![Tests](https://img.shields.io/badge/local%20tests-404%20pass%20%7C%2011%20skip-567965?style=flat-square)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20GPL--2.0%20patches-567965?style=flat-square)](LICENSING.md)
 
 [**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap)
@@ -48,13 +48,15 @@
 | GT911 touch controller | 🟢 **Working (basic)** | Virtual touch/release through QMP; factory UI reacts to real guest events |
 | GPIO6 / panel BUSY / IRQ | 🟢 **Working (instrumented)** | CPU interrupt routing, BUSY edge/duration counters; reset-order defect fixed and re-verified on factory firmware ([0051](tools/ybx-system-emu/experiments/0051-busy-telemetry-reset-verification-20261030.md)) |
 | SDMMC / FAT media | 🟡 **Partial** | SDMMC DMA reads and selected FAT image workflows verified; not full card parity |
-| Browser interface | 🟢 **Working** | Live display, touch injection, reset, QEMU crash recovery |
-| Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Real radio register windows and interrupt/device semantics are missing |
+| Browser interface | 🟢 **Working** | Live display, touch injection, reset, QEMU crash recovery, read-only `/api/telemetry`, ETag caching, bounded tap queue |
+| GUI navigation acceptance | 🟢 **Working** | Home → More → YBX Settings → System settings → Back verified against the running guest with per-step SSD1677 SHA gates ([0062](tools/ybx-system-emu/experiments/0062-batch3-nav-automation.md)) |
+| Patched QEMU build | 🟢 **Reproducible (composition)** | The audited chain composes deterministically from the pinned base `febae18` with a signed manifest; the container build is opt-in and not yet executed end to end ([0063](tools/ybx-system-emu/experiments/0063-batch3-repro-build.md)) |
+| Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Factory register accesses are pinned and an opt-in non-fake stub is proposed ([0060](tools/ybx-system-emu/experiments/0060-batch3-wifi-radio.md)); no scan, association, address, frame or TLS is produced |
 | TLS and cloud services | ⚪ **Unverified** | No verified end-to-end guest TLS session; do not infer it from host networking |
-| Power / sleep / waveform timing | 🟡 **Experimental** | Host lifecycle models and telemetry, not physical E-Ink fidelity |
+| Power / sleep / waveform timing | 🟡 **Experimental** | Host lifecycle models and telemetry, not physical E-Ink fidelity; the three known SSD1677 gaps are modelled and a fix is proposed ([0061](tools/ybx-system-emu/experiments/0061-batch3-epd-waveform.md)) |
 | X3 / X4 / other panels | 🟡 **Early bring-up** | CPU milestones exist; full interactive device coverage is not claimed |
 
-**Evidence:** standalone run: 288 tests (281 passed, 7 skipped). With the companion CrossPoint firmware source tree: 312 tests (306 passed, 6 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
+**Evidence:** standalone run: 415 tests (404 passed, 11 skipped). With the companion CrossPoint firmware source tree: 439 tests (429 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
 
 ## How it works
 
@@ -126,11 +128,15 @@ Open **http://127.0.0.1:8784/**. The launcher checks required files and avoids e
 assets/                   ← genuine firmware captures + README artwork
 scripts/                  ← gallery renderer
 tools/ybx-system-emu/
-    serve_x4pro_browser.py    ← live browser + QMP bridge
+    serve_x4pro_browser.py    ← live browser + QMP bridge (+ /api/telemetry)
     start_x4pro_browser.sh    ← Docker launcher
     probe_*.py                ← CPU/peripheral acceptance probes
     test_*.py                 ← host regression suite
-    check_qemu_patch_composition.py
+    check_qemu_patch_composition.py  ← audited chain + provenance checker
+    build_reproducible_qemu.sh       ← clean-room chain composition and build
+    run_x4pro_guest_navigation.py    ← multi-step GUI acceptance runner
+    x4pro_guest_navigation.py        ← acceptance plan, screen predicates, SHA gates
+    wifi_radio_inventory.py          ← factory radio-access inventory
     patches/                  ← QEMU patch inventory and provenance
     experiments/              ← reproducible research notes and candidate patches
     QEMU_BRINGUP.md           ← detailed hardware evidence
@@ -143,9 +149,12 @@ tools/ybx-system-emu/
 - [x] Browser process recovery and typed HTTP failures
 - [x] Wi-Fi capability gap analysis, FreeRTOS and BUSY/IRQ investigations
 - [x] Fix BUSY telemetry reset ordering and verify in rebuilt QEMU
-- [ ] Make patched QEMU reproducible from a clean checkout and publish build verification
+- [x] Reproducible chain composition from a clean checkout with a signed manifest
+- [x] Multi-step GUI acceptance runner with per-step frame SHA gates
+- [x] Read-only browser telemetry (BUSY edges, BUSY duration, frame counters)
+- [ ] Execute the reproducible container build end to end and publish its binary SHA
 - [ ] Add proper ESP32-S3 Wi-Fi radio/MAC support and isolated connection testing
-- [ ] Expand SSD1677 waveform, sleep/reset and power correctness
+- [ ] Expand SSD1677 waveform, sleep/reset and power correctness in the running emulator
 - [ ] Extend device fidelity to X3, X4, further controller/panel variants
 - [ ] Cross-platform packaging, automated CI and release artifacts
 
