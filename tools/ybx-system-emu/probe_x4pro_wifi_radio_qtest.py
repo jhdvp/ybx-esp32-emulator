@@ -43,11 +43,44 @@ READS = (
 RADIO_WINDOWS = ("FE2", "FE", "BT_BB", "NRX", "BB", "MODEM_COEX", "WIFI_MAC",
                  "WIFI_TX_CRYPTO")
 
+# ---------------------------------------------------------------------------
+# 0060: semantics check for the opt-in register stub (patch
+# experiments/0060-s3-wifi-radio-model.patch, machine property
+# ybx-x4pro-wifi-stub=on). Pure data + parsers below; the QEMU run itself
+# needs the rebuilt binary and is left to the orchestrator.
+# (kind, address, data-or-None, label, expected)
+STUB_OPS = (
+    ("read",  0x60035f00, None,        "stats.magic",          0x59425230),
+    ("read",  0x60035f04, None,        "stats.window_count",   6),
+    ("write", 0x60034400, 0x5a5a5a5a,  "crypto.key_write",     None),
+    ("read",  0x60034400, None,        "crypto.key_readback",  0x5a5a5a5a),
+    ("read",  0x60033c3c, None,        "mac.intr_get_empty",   0),
+    ("write", 0x60033c40, 0xffffffff,  "mac.intr_clr",         None),
+    ("read",  0x60033c3c, None,        "mac.intr_still_empty", 0),
+    ("read",  0x6003500c, None,        "tsf.frozen_low",       0),
+    ("write", 0x60035010, 0xdeadbeef,  "tsf.set_ignored",      None),
+    ("read",  0x6003500c, None,        "tsf.still_frozen",     0),
+    ("read",  0x60035f08, None,        "stats.read_count",     5),
+    ("read",  0x60035f10, None,        "stats.write_count",    3),
+    ("read",  0x60035f18, None,        "stats.last_read",      0x6003500c),
+    ("read",  0x60035f1c, None,        "stats.last_write",     0x60035010),
+)
+
 QEMU = "/qemu/build-ybx/qemu-system-xtensa"
 
 
 def qtest_protocol() -> str:
     return "".join(f"readl 0x{address:x}\n" for _, address, _ in READS)
+
+
+def stub_protocol() -> str:
+    lines = []
+    for kind, address, data, _, _ in STUB_OPS:
+        if kind == "write":
+            lines.append(f"writel 0x{address:x} 0x{data:x}")
+        else:
+            lines.append(f"readl 0x{address:x}")
+    return "".join(line + "\n" for line in lines)
 
 
 READ_OK = re.compile(r"OK\s+0x([0-9a-f]{16})")
@@ -57,6 +90,38 @@ def parse_reads(stdout: str) -> list[int]:
     return [int(match.group(1), 16)
             for match in (READ_OK.search(line) for line in stdout.splitlines())
             if match]
+
+
+def classify_stub(values: list[int]) -> list[dict]:
+    """Match STUB_OPS reads against expected register-stub semantics."""
+    read_ops = [op for op in STUB_OPS if op[0] == "read"]
+    if len(values) != len(read_ops):
+        raise RuntimeError(f"expected {len(read_ops)} reads, got "
+                           f"{len(values)}: {values}")
+    rows = []
+    for (_, address, _, label, expected), value in zip(read_ops, values):
+        rows.append({"label": label, "address": f"0x{address:08x}",
+                     "value": f"0x{value:08x}",
+                     "expected": f"0x{expected:08x}", "ok": value == expected})
+    return rows
+
+
+def verdict_stub(stub_rows: list[dict], regions: list) -> dict:
+    """What the stub changed in the mtree, and whether its semantics held."""
+    coverage = {row["window"]: row
+                for row in (classify_window(w, regions) for w in windows())}
+    owners = {name: coverage[name]["owners"] for name in
+              ("WIFI_MAC", "MODEM_COEX", "WIFI_TX_CRYPTO", "FE", "WDEV")}
+    stub_regions = sorted({o for names in owners.values() for o in names
+                           if "wifi_stub" in o})
+    return {
+        "stub_semantics_all_ok": all(row["ok"] for row in stub_rows),
+        "stub_mapped_regions": stub_regions,
+        "radio_window_owners_with_stub": owners,
+        "association_claimed": False,
+        "frames_delivered": 0,
+        "interrupt_wired": False,
+    }
 
 
 def classify_reads(values: list[int]) -> list[dict]:
@@ -108,8 +173,9 @@ def device_help(image: str, qemu_root: Path) -> str:
     return result.stdout + result.stderr
 
 
-def mtree_capture(image: str, qemu_root: Path, rom_dir: str, nic: bool) -> str:
-    script = ["timeout", "-k", "2s", "8s", QEMU, "-M", "esp32s3",
+def mtree_capture(image: str, qemu_root: Path, rom_dir: str, nic: bool,
+                  machine: str = "esp32s3") -> str:
+    script = ["timeout", "-k", "2s", "8s", QEMU, "-M", machine,
               "-L", rom_dir, "-S", "-nographic", "-serial", "null"]
     if nic:
         script += ["-nic", "user,model=open_eth,id=ybxeth0"]
@@ -117,13 +183,24 @@ def mtree_capture(image: str, qemu_root: Path, rom_dir: str, nic: bool) -> str:
     return result.stdout + result.stderr
 
 
-def qtest_capture(image: str, qemu_root: Path, rom_dir: str) -> str:
+def qtest_capture(image: str, qemu_root: Path, rom_dir: str,
+                  machine: str = "esp32s3", stdin: str | None = None) -> str:
     result = docker(
         image, qemu_root,
-        ["timeout", "-k", "2s", "5s", QEMU, "-machine", "esp32s3",
+        ["timeout", "-k", "2s", "5s", QEMU, "-machine", machine,
          "-L", rom_dir, "-S", "-nographic", "-monitor", "none",
-         "-serial", "null", "-qtest", "stdio"], stdin=qtest_protocol())
+         "-serial", "null", "-qtest", "stdio"],
+        stdin=qtest_protocol() if stdin is None else stdin)
     return result.stdout
+
+
+def machine_supports_property(image: str, qemu_root: Path, prop: str) -> bool:
+    """True when the built QEMU knows `-M esp32s3,<prop>=on`."""
+    result = docker(image, qemu_root,
+                    ["timeout", "-k", "2s", "5s", QEMU, "-M",
+                     f"esp32s3,{prop}=on", "-L", "/qemu/build-ybx", "-S",
+                     "-nographic", "-serial", "null"], stdin="quit\n")
+    return result.returncode == 0 and prop not in result.stderr
 
 
 def main() -> int:
@@ -133,6 +210,10 @@ def main() -> int:
     parser.add_argument("--docker-image", default="ybx-qemu-builder:20261029")
     parser.add_argument("--rom-dir", default="/qemu/build-ybx",
                         help="container path holding esp32s3_rev0_rom.bin")
+    parser.add_argument("--with-stub", action="store_true",
+                        help="also exercise the 0060 register stub "
+                             "(requires a QEMU built with "
+                             "experiments/0060-s3-wifi-radio-model.patch)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -155,10 +236,32 @@ def main() -> int:
                                         in parse_mtree(bridged)
                                         if "open_eth" in region.name}),
         "verdict": verdict(rows, regions, devices),
+        "stub": None,
         "qemu_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "guest_boot": False,
         "container_network": "none",
     }
+    if args.with_stub:
+        machine = "esp32s3,ybx-x4pro-wifi-stub=on"
+        if machine_supports_property(args.docker_image, root,
+                                    "ybx-x4pro-wifi-stub"):
+            stub_rows = classify_stub(parse_reads(
+                qtest_capture(args.docker_image, root, args.rom_dir,
+                              machine=machine, stdin=stub_protocol())))
+            stub_regions = parse_mtree(mtree_capture(
+                args.docker_image, root, args.rom_dir, nic=False,
+                machine=machine))
+            report["stub"] = {
+                "machine_property": machine,
+                "rows": stub_rows,
+                "verdict": verdict_stub(stub_rows, stub_regions),
+            }
+        else:
+            report["stub"] = {"machine_property":
+                              "ybx-x4pro-wifi-stub=on",
+                              "available": False,
+                              "reason": "prebuilt QEMU predates "
+                                        "0060-s3-wifi-radio-model.patch"}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report["verdict"], indent=2))
