@@ -1,0 +1,107 @@
+diff --git a/hw/misc/esp32s3_wifi_stub.c b/hw/misc/esp32s3_wifi_stub.c
+--- a/hw/misc/esp32s3_wifi_stub.c
++++ b/hw/misc/esp32s3_wifi_stub.c
+@@ -24,13 +24,20 @@
+ #include "hw/misc/esp32s3_wifi_stub.h"
+ 
+ const Esp32s3WifiStubWindowInfo
+-    esp32s3_wifi_stub_windows[ESP32S3_WIFI_STUB_WINDOW_COUNT] = {
+-    { "modem_coex", 0x60031000, 0x1000 },
+-    { "wlan_mac",   0x60033000, 0x1000 },
+-    { "tx_crypto",  0x60034000, 0x1000 },
++    esp32s3_wifi_stub_windows[ESP32S3_WIFI_STUB_REGION_COUNT] = {
++    /* Measured extremes: experiments/0060 l32r literal-pool ranges of the
++     * factory image, widened only where the Stage-1 runtime tap (see
++     * experiments/0081) proved an in-range touch. Ends are highest+4,
++     * word-aligned. Anything outside falls back to esp32s3.iomem zero-fill,
++     * so the stub cannot answer a window the inventory never proved. */
++    { "modem_coex", 0x60031000, 0x0534 }, /* to 0x60031530 */
++    { "wlan_mac",   0x60033000, 0x0D18 }, /* to 0x60033d14 */
++    { "tx_crypto",  0x600342f8, 0x0130 }, /* 0x600342f8 to 0x60034424 */
+     { "wdev_low",   0x60035000, 0x007C }, /* stops before the TRNG word */
+-    { "wdev_high",  0x60035080, 0x0F80 },
+-    { "fe",         0x60006000, 0x1000 },
++    { "wdev_high",  0x60035080, 0x00A0 }, /* to 0x6003511c */
++    { "fe",         0x60006000, 0x01E8 }, /* to 0x600061e4; tap 0x60006090 */
++    { "ybx_stats",  ESP32S3_WIFI_STUB_STATS_BASE,
++                    ESP32S3_WIFI_STUB_STATS_SIZE }, /* host ABI, not radio */
+ };
+ 
+ typedef struct Esp32s3WifiStubMmioCtx {
+@@ -167,9 +174,9 @@
+     Esp32s3WifiStubState *s = ESP32S3_WIFI_STUB(obj);
+     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+ 
+-    s->ctx = g_new0(Esp32s3WifiStubMmioCtx, ESP32S3_WIFI_STUB_WINDOW_COUNT);
++    s->ctx = g_new0(Esp32s3WifiStubMmioCtx, ESP32S3_WIFI_STUB_REGION_COUNT);
+     s->seen = g_hash_table_new(NULL, NULL);
+-    for (int i = 0; i < ESP32S3_WIFI_STUB_WINDOW_COUNT; ++i) {
++    for (int i = 0; i < ESP32S3_WIFI_STUB_REGION_COUNT; ++i) {
+         s->ctx[i].s = s;
+         s->ctx[i].index = i;
+         memory_region_init_io(&s->mr[i], obj, &esp32s3_wifi_stub_ops,
+diff --git a/include/hw/misc/esp32s3_wifi_stub.h b/include/hw/misc/esp32s3_wifi_stub.h
+--- a/include/hw/misc/esp32s3_wifi_stub.h
++++ b/include/hw/misc/esp32s3_wifi_stub.h
+@@ -22,11 +22,17 @@
+ #define TYPE_ESP32S3_WIFI_STUB "misc.esp32s3.wifi_stub"
+ OBJECT_DECLARE_SIMPLE_TYPE(Esp32s3WifiStubState, ESP32S3_WIFI_STUB)
+ 
+-/* Register windows the factory X4 Pro image drives (measured from its own
+- * l32r literal pools; see tools/ybx-system-emu/experiments/0060). The WDEV
+- * window is split around ESP32S3_RNG_BASE (0x6003507c) so the existing TRNG
+- * device keeps ownership of those 4 bytes. */
++/* Register windows the factory X4 Pro image drives, narrowed to the exact
++ * ranges measured from its l32r literal pools (experiments/0060) and from
++ * the Stage-1 runtime tap (experiments/0081): nothing outside a measured
++ * range is claimed, so an early-boot access with a computed or ROM-local
++ * literal falls back to esp32s3.iomem zero-fill instead of stub storage.
++ * The WDEV window is split around ESP32S3_RNG_BASE (0x6003507c) so the
++ * existing TRNG device keeps ownership of those 4 bytes. */
+ #define ESP32S3_WIFI_STUB_WINDOW_COUNT 6
++/* ... plus one region for the host stats block (index 6), which is not a
++ * radio window and reports WINDOW_COUNT as the radio count. */
++#define ESP32S3_WIFI_STUB_REGION_COUNT 7
+ 
+ typedef struct Esp32s3WifiStubWindowInfo {
+     const char *name;
+@@ -35,11 +41,12 @@
+ } Esp32s3WifiStubWindowInfo;
+ 
+ extern const Esp32s3WifiStubWindowInfo
+-    esp32s3_wifi_stub_windows[ESP32S3_WIFI_STUB_WINDOW_COUNT];
++    esp32s3_wifi_stub_windows[ESP32S3_WIFI_STUB_REGION_COUNT];
+ 
+-/* Statistics block, mapped inside the WDEV_HIGH window. Host-side
+- * observability only: the factory image never touches 0x60035f00 (the
+- * highest literal address measured in WDEV is 0x6003511c). */
++/* Statistics block, mapped as its own region (index
++ * ESP32S3_WIFI_STUB_REGION_COUNT-1). Host-side observability only: the
++ * factory image never touches 0x60035f00 (the highest literal address
++ * measured in WDEV is 0x6003511c). */
+ #define ESP32S3_WIFI_STUB_STATS_BASE 0x60035f00
+ #define ESP32S3_WIFI_STUB_STATS_SIZE 0x20
+ #define ESP32S3_WIFI_STUB_STATS_MAGIC 0x59425230 /* bytes 'Y' 'B' 'R' '0' */
+@@ -49,8 +56,8 @@
+ typedef struct Esp32s3WifiStubState {
+     SysBusDevice parent_obj;
+ 
+-    MemoryRegion mr[ESP32S3_WIFI_STUB_WINDOW_COUNT];
+-    uint32_t regs[ESP32S3_WIFI_STUB_WINDOW_COUNT][ESP32S3_WIFI_STUB_MAX_WORDS];
++    MemoryRegion mr[ESP32S3_WIFI_STUB_REGION_COUNT];
++    uint32_t regs[ESP32S3_WIFI_STUB_REGION_COUNT][ESP32S3_WIFI_STUB_MAX_WORDS];
+     struct Esp32s3WifiStubMmioCtx *ctx; /* window index for each mr[] */
+ 
+     bool tap;                 /* log first touch of each register word */
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -1045,7 +1045,7 @@
+         object_initialize_child(OBJECT(ss), "wifi_stub", &ss->wifi_stub,
+                                 TYPE_ESP32S3_WIFI_STUB);
+         qdev_realize(DEVICE(&ss->wifi_stub), &ss->periph_bus, &error_fatal);
+-        for (int i = 0; i < ESP32S3_WIFI_STUB_WINDOW_COUNT; ++i) {
++        for (int i = 0; i < ESP32S3_WIFI_STUB_REGION_COUNT; ++i) {
+             const Esp32s3WifiStubWindowInfo *winfo =
+                 &esp32s3_wifi_stub_windows[i];
+             memory_region_add_subregion_overlap(
