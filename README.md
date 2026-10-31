@@ -11,10 +11,10 @@
 ![Platform](https://img.shields.io/badge/host-macOS%20%2B%20Docker-586D70?style=flat-square)
 ![Guest](https://img.shields.io/badge/guest-ESP32--S3%20%2F%20ESP32--C3-567965?style=flat-square)
 [![Host checks](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml/badge.svg)](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml)
-![Tests](https://img.shields.io/badge/local%20tests-404%20pass%20%7C%2011%20skip-567965?style=flat-square)
+![Tests](https://img.shields.io/badge/local%20tests-637%20pass%20%7C%2011%20skip-567965?style=flat-square)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20GPL--2.0%20patches-567965?style=flat-square)](LICENSING.md)
 
-[**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap)
+[**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap) · [**Status snapshot**](STATUS.md)
 
 </div>
 
@@ -55,10 +55,10 @@
 | Upstream CrossPoint / inkMOD images | 🟡 **Boots (CrossPoint)** | Stock CrossPoint 2.0.0rc and 1.6.5 boot and paint their own UI after the 0068 PSRAM bounds fix; inkMOD starts but paints nothing ([0068](tools/ybx-system-emu/experiments/0068-bootloader-flash-boot-matrix-20261031.md)) |
 | Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Factory register accesses are pinned and an opt-in non-fake stub is proposed ([0060](tools/ybx-system-emu/experiments/0060-batch3-wifi-radio.md)); no scan, association, address, frame or TLS is produced |
 | TLS and cloud services | ⚪ **Unverified** | No verified end-to-end guest TLS session; do not infer it from host networking |
-| Power / sleep / waveform timing | 🟡 **Experimental** | Host lifecycle models and telemetry, not physical E-Ink fidelity; the three known SSD1677 gaps are modelled and a fix is proposed ([0061](tools/ybx-system-emu/experiments/0061-batch3-epd-waveform.md)) |
+| Power / sleep / waveform timing | 🟢 **Modelled** | Host lifecycle models and telemetry, not physical E-Ink fidelity; split power/waveform BUSY windows, a real deep-sleep state and BUSY around reset are in the running kernel ([0069](tools/ybx-system-emu/experiments/0069-epd-waveform-apply-20261031.md)) |
 | X3 / X4 / other panels | 🟡 **Early bring-up** | CPU milestones exist; full interactive device coverage is not claimed |
 
-**Evidence:** standalone run: 415 tests (404 passed, 11 skipped). With the companion CrossPoint firmware source tree: 439 tests (429 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
+**Evidence:** standalone run: 648 tests (637 passed, 11 skipped). With the companion CrossPoint firmware source tree: 672 tests (662 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
 
 ## How it works
 

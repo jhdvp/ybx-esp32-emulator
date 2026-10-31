@@ -66,7 +66,7 @@ class HelperTests(unittest.TestCase):
     def test_full_chain_is_0042_prefix_plus_ordered_telemetry(self):
         self.assertEqual(chk.X4PRO_FULL_CHAIN,
                          chk.X4PRO_0042_CHAIN + chk.TELEMETRY_CHAIN
-                         + chk.PSRAM_CHAIN)
+                         + chk.PSRAM_CHAIN + chk.POST_PSRAM_CHAIN)
         self.assertEqual(chk.TELEMETRY_CHAIN[0],
                          "experiments/0043-s3-optin-crosscore-ipi-counters.patch")
         self.assertEqual(chk.TELEMETRY_CHAIN[1],
@@ -77,8 +77,11 @@ class HelperTests(unittest.TestCase):
                          "experiments/0051-busy-telemetry-reset-order.patch")
         self.assertEqual(chk.PSRAM_CHAIN,
                          ("experiments/0068-esp32s3-bootloader-flash-fix.patch",))
+        self.assertEqual(chk.POST_PSRAM_CHAIN,
+                         ("experiments/0069-ssd1677-waveform-sleep-v2.patch",
+                          "experiments/0071-s3-wifi-radio-stage1.patch"))
         self.assertEqual(chk.X4PRO_FULL_CHAIN[-1],
-                         "experiments/0068-esp32s3-bootloader-flash-fix.patch")
+                         "experiments/0071-s3-wifi-radio-stage1.patch")
 
     def test_0043_telemetry_is_audited_not_excluded(self):
         name = "experiments/0043-s3-optin-crosscore-ipi-counters.patch"
@@ -89,7 +92,7 @@ class HelperTests(unittest.TestCase):
     def test_expected_binary_sha_is_pinned_literal(self):
         self.assertEqual(
             chk.EXPECTED_BINARY_SHA256,
-            "7e554ba9eb3e22b46eaf9d7cbcfbb2279d4b5880d1f407314fb0bbe452e13da7")
+            "f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236")
         self.assertRegex(chk.EXPECTED_BINARY_SHA256, r"^[0-9a-f]{64}$")
 
     def test_telemetry_patch_in_0042_chain_fails_closed(self):

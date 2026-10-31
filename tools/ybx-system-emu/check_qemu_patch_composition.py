@@ -72,11 +72,19 @@ TELEMETRY_CHAIN = (
 PSRAM_CHAIN = (
     "experiments/0068-esp32s3-bootloader-flash-fix.patch",
 )
-X4PRO_FULL_CHAIN = X4PRO_0042_CHAIN + TELEMETRY_CHAIN + PSRAM_CHAIN
+# Final layer validated in the batch-4 pass and promoted to the live emulator:
+# 0069 (SSD1677 split power/waveform windows, deep sleep, BUSY around reset)
+# then 0071 (opt-in Wi-Fi radio Stage 1 stub, off by default).
+POST_PSRAM_CHAIN = (
+    "experiments/0069-ssd1677-waveform-sleep-v2.patch",
+    "experiments/0071-s3-wifi-radio-stage1.patch",
+)
+X4PRO_FULL_CHAIN = (X4PRO_0042_CHAIN + TELEMETRY_CHAIN + PSRAM_CHAIN
+                    + POST_PSRAM_CHAIN)
 AUDITED_CHAINS = (X4PRO_0042_CHAIN, X4PRO_FULL_CHAIN)
 CHAIN_TAIL = {X4PRO_0042_CHAIN: "experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch",
               X4PRO_FULL_CHAIN:
-                  "experiments/0068-esp32s3-bootloader-flash-fix.patch"}
+                  "experiments/0071-s3-wifi-radio-stage1.patch"}
 MODEL_TEST_0043 = HERE / "experiments" / "0043-agent-epd-busy-model-test.c"
 
 # 0042 must expose GPIO_PCPU_INT: ESP-IDF S3 gpio_ll_get_intr_status() reads
@@ -92,7 +100,7 @@ X4PRO_MACHINE = "ybx-x4pro-epd"
 # image ybx-qemu-builder:20261029 with the QEMU_BRINGUP.md configure flags.
 # Guardrails and build_reproducible_qemu.sh compare (not just record) against it.
 EXPECTED_BINARY_SHA256 = (
-    "7e554ba9eb3e22b46eaf9d7cbcfbb2279d4b5880d1f407314fb0bbe452e13da7")
+    "f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236")
 FACTORY_FLASH_SHA256 = (
     "206ed9661bd71477d1a54397c5a2cfe490179a3f59ab094f1e7421745c609523"
 )
@@ -184,7 +192,12 @@ def normalize_patch(name: str, root: Path | None = None) -> str:
       anything else is left as-is so the later git apply rejects it.
     """
     lines = ((root or HERE) / name).read_text().splitlines()
-    if lines and not lines[0].startswith("diff --git "):
+    if (len(lines) >= 2 and lines[0].startswith("--- a/")
+            and lines[1].startswith("+++ b/")):
+        # Plain unified diff (diff -u) without a git header: git apply accepts
+        # it as-is with the a/ b/ prefixes, so keep the bytes untouched.
+        pass
+    elif lines and not lines[0].startswith("diff --git "):
         start = next((i for i, ln in enumerate(lines)
                       if ln.startswith("diff --git ")), None)
         if start is None:
