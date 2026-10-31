@@ -298,7 +298,12 @@ class StageTwoBuildTests(SandboxMixin, unittest.TestCase):
         cls.tmp.cleanup()
 
     def _build(self, extra):
-        return run_script(["--work-dir", str(self.work), "--build", *extra],
+        # The same pinned source as the dry run: without it the script falls
+        # back to the operator's local QEMU checkout, which CI does not have.
+        return run_script(["--work-dir", str(self.work), "--build",
+                           "--qemu-src", str(self.src), "--base", self.base,
+                           "--chain-file", str(self.chain_file),
+                           "--patch-root", str(self.tools), *extra],
                           env={"YBX_DOCKER_BIN": str(self.stub)})
 
     def test_build_uses_pinned_recipe_and_fails_closed_on_sha(self):
