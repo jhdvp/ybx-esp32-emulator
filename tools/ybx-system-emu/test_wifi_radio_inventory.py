@@ -1,10 +1,12 @@
 """Unit tests for the Wi-Fi radio capability inventory (no QEMU, no ELF)."""
 import unittest
 
-from wifi_radio_inventory import (classify_window, group_targets,
+from wifi_radio_inventory import (FACTORY_BASELINE, classify_window,
+                                  group_targets, key_register_counts,
                                   parse_device_help, parse_l32r_targets,
                                   parse_mtree, parse_nm, radio_device_names,
-                                  subsystem_counts, window_for, windows)
+                                  subsystem_counts, verify_baseline,
+                                  window_for, windows)
 
 MTREE = """address-space: memory
   0000000000000000-ffffffffffffffff (prio 0, i/o): system
@@ -113,6 +115,131 @@ class DeviceInventory(unittest.TestCase):
                                     "esp32s3.rng"])
         self.assertEqual([], found["radio_devices"])
         self.assertIn("open_eth", found["ethernet_devices"])
+
+
+# Excerpts from
+# xtensa-esp32s3-elf-objdump -d --section .flash.text --section .iram0.text
+# of the factory X4 Pro ELF (sha256 7e040053...). Addresses, encodings and
+# symbol decorations are verbatim; inter-column whitespace was normalised to
+# spaces. They pin that the shipped image really dereferences these literal
+# addresses.
+FACTORY_EXCERPTS = """
+4037e1a8 <hal_mac_interrupt_get_event>:
+4037e1a8:	004136        	entry	a1, 32
+4037e1ab:	fffe21        	l32r	a2, 4037e1a4 <wdev_dump_rx_linked_list+0x78> (60033c3c <UART2+0x5c3c>)
+4037e1bc <hal_mac_interrupt_clr_event>:
+4037e1bc:	004136        	entry	a1, 32
+4037e1bf:	fffe81        	l32r	a8, 4037e1b8 <hal_mac_interrupt_get_event+0x10> (60033c40 <UART2+0x5c40>)
+4037e1d8 <hal_get_tsf_time>:
+4037e1d8:	004136        	entry	a1, 32
+4037e1db:	fffc81        	l32r	a8, 4037e1cc <hal_mac_interrupt_clr_event+0x10> (6003500c <UART2+0x700c>)
+4037e1de:	fffc91        	l32r	a9, 4037e1d0 <hal_mac_interrupt_clr_event+0x14> (6003501c <UART2+0x701c>)
+42262290 <hal_deinit>:
+422622d8:	ffec81        	l32r	a8, 42262288 <mac_last_rxbuf_init+0xf8> (60033c40 <UART2+0x5c40>)
+"""
+
+
+class PinnedFactoryBaseline(unittest.TestCase):
+    """0060: numbers measured from the factory image on 2026-10-31.
+
+    Regenerating the inventory against the same ELF must reproduce every
+    pinned count; verify_baseline() is what the tool itself runs so a drift
+    is loud rather than silent.
+    """
+
+    def test_pinned_window_counts(self):
+        want = {
+            "WIFI_MAC": (154, 90), "WDEV": (125, 32), "FE": (125, 62),
+            "RTCCNTL": (118, 43), "BT_BB": (62, 41), "MODEM_COEX": (35, 16),
+            "WIFI_TX_CRYPTO": (34, 20), "SYSCON": (25, 11), "NRX": (10, 7),
+            "BB": (3, 3), "FE2": (1, 1),
+        }
+        self.assertEqual(set(want), set(FACTORY_BASELINE["windows"]))
+        for name, (accesses, distinct) in want.items():
+            row = FACTORY_BASELINE["windows"][name]
+            self.assertEqual(accesses, row["accesses"], name)
+            self.assertEqual(distinct, row["distinct_addresses"], name)
+
+    def test_total_and_symbol_pins(self):
+        self.assertEqual(692, FACTORY_BASELINE["total_l32r_modem_accesses"])
+        self.assertEqual(sum(w["accesses"]
+                             for w in FACTORY_BASELINE["windows"].values()),
+                         FACTORY_BASELINE["total_l32r_modem_accesses"])
+        self.assertEqual(25846, FACTORY_BASELINE["symbols"]["total_defined"])
+        self.assertEqual(1, FACTORY_BASELINE["symbols"]["wired_eth"])
+        self.assertEqual(292, FACTORY_BASELINE["symbols"]["coexistence"])
+
+    def test_every_window_states_a_reason(self):
+        for name, row in FACTORY_BASELINE["windows"].items():
+            self.assertTrue(row["reason"].strip(), name)
+            self.assertTrue(row["examples"], name)
+
+    def test_key_register_pins(self):
+        keys = FACTORY_BASELINE["key_registers"]
+        self.assertEqual(3, keys["0x60034400"]["accesses"])
+        self.assertEqual(43, keys["0x60035000"]["accesses"])
+        self.assertEqual(1, keys["0x60033c3c"]["accesses"])
+        self.assertEqual(3, keys["0x60033c40"]["accesses"])
+        self.assertEqual(["hal_mac_interrupt_get_event"],
+                         keys["0x60033c3c"]["functions"])
+
+    def _report_like_factory(self):
+        access = {name: {"accesses": row["accesses"],
+                         "distinct_addresses": row["distinct_addresses"],
+                         "observed_range": row["observed_range"]}
+                  for name, row in FACTORY_BASELINE["windows"].items()}
+        keys = {addr: {"accesses": row["accesses"]}
+                for addr, row in
+                FACTORY_BASELINE["key_registers"].items()}
+        return {"symbols": dict(FACTORY_BASELINE["symbols"]),
+                "firmware_modem_access": access,
+                "key_register_counts": keys}
+
+    def test_verify_baseline_accepts_factory_shaped_report(self):
+        self.assertEqual([], verify_baseline(self._report_like_factory()))
+
+    def test_verify_baseline_flags_drift(self):
+        report = self._report_like_factory()
+        report["firmware_modem_access"]["WIFI_MAC"]["accesses"] = 153
+        report["key_register_counts"]["0x60034400"]["accesses"] = 2
+        problems = verify_baseline(report)
+        self.assertTrue(any("WIFI_MAC.accesses" in p for p in problems))
+        self.assertTrue(any("0x60034400" in p for p in problems))
+
+    def test_verify_baseline_flags_missing_window(self):
+        report = self._report_like_factory()
+        del report["firmware_modem_access"]["FE2"]
+        self.assertTrue(any("FE2" in p
+                            for p in verify_baseline(report)))
+
+
+class FactoryExcerpts(unittest.TestCase):
+    """l32r attribution against verbatim factory disassembly lines."""
+
+    def test_interrupt_get_and_clear_are_attributed(self):
+        targets = parse_l32r_targets(FACTORY_EXCERPTS)
+        self.assertIn(("WIFI_MAC", "hal_mac_interrupt_get_event", 0x60033c3c),
+                      targets)
+        self.assertIn(("WIFI_MAC", "hal_mac_interrupt_clr_event", 0x60033c40),
+                      targets)
+        # the code that clears the MAC event register inside hal_deinit lives
+        # at 422622d8; objdump decorates its literal pool with the neighbouring
+        # mac_last_rxbuf_init symbol, attribution must follow the enclosing
+        # function header, not the pool decoration.
+        self.assertIn(("WIFI_MAC", "hal_deinit", 0x60033c40), targets)
+
+    def test_tsf_reads_are_attributed_to_wdev(self):
+        targets = parse_l32r_targets(FACTORY_EXCERPTS)
+        self.assertIn(("WDEV", "hal_get_tsf_time", 0x6003500c), targets)
+        self.assertIn(("WDEV", "hal_get_tsf_time", 0x6003501c), targets)
+
+    def test_key_register_counts_over_excerpt(self):
+        counts = key_register_counts(parse_l32r_targets(FACTORY_EXCERPTS))
+        self.assertEqual(1, counts["0x60033c3c"]["accesses"])
+        self.assertEqual(2, counts["0x60033c40"]["accesses"])
+        self.assertEqual(["hal_deinit", "hal_mac_interrupt_clr_event"],
+                         counts["0x60033c40"]["functions"])
+        self.assertNotIn("0x60034400", counts)  # not inside the excerpt
 
 
 if __name__ == "__main__":

@@ -190,6 +190,179 @@ L32R_LINE = re.compile(
     r"\s+\((?P<target>[0-9a-f]{8})(?: <[^>]*>)?\)")
 FUNCTION_LINE = re.compile(r"^[0-9a-f]+ <(?P<name>[^>]+)>:")
 
+# ---------------------------------------------------------------------------
+# Pinned factory baseline (0060). Every number below was produced by running
+# this module against the factory X4 Pro ELF
+# (sha256 7e040053768db2d6559305dd26433b0ee8264de143202d3c72ace582e7ba98e5,
+# /Users/yaraslauhancharou/.local/state/xteink-agent-workspaces/
+# fw-092c2be5-symbols-20261029/.pio/build/x4pro/firmware.elf) with
+# xtensa-esp32s3-elf-nm/-objdump from PlatformIO
+# toolchain-xtensa-esp-elf on 2026-10-31. "accesses" counts literal-pool
+# l32r operands whose target falls in the window (compile-time evidence that
+# the function dereferences that MMIO); "reason" names why the driver touches
+# the window, taken from the disassembling function names, not from guessing.
+FACTORY_BASELINE = {
+    "elf_sha256": ("7e040053768db2d6559305dd26433b0ee8264de143202d3c72ace5"
+                   "82e7ba98e5"),
+    "measured": "2026-10-31",
+    "symbols": {"total_defined": 25846, "esp_wifi_api": 123,
+                "wifi_core_hal": 132, "phy": 269, "coexistence": 292,
+                "network_stack": 367, "tls": 312, "wired_eth": 1},
+    "total_l32r_modem_accesses": 692,
+    "windows": {
+        "WIFI_MAC": {
+            "accesses": 154, "distinct_addresses": 90,
+            "observed_range": "0x60033000-0x60033d14",
+            "reason": "MAC init/deinit, BSSID, RX ring setup, TX-queue state, "
+                      "interrupt get/clear, EDCA/PTI — every esp_wifi_start/"
+                      "stop and queue operation programs these registers",
+            "examples": ["hal_mac_init", "hal_mac_set_bssid", "mac_txrx_init",
+                         "hal_mac_interrupt_clr_event"],
+        },
+        "WDEV": {
+            "accesses": 125, "distinct_addresses": 32,
+            "observed_range": "0x60035000-0x6003511c",
+            "reason": "TSF get/set, four hardware timers, TBTT and light "
+                      "sleep, RX-beacon PTI, power-interrupt get/clear and "
+                      "wdev status word 0x60035000 (hottest single register, "
+                      "43 literal sites from cnx_bss_alloc/clear_bss_queue)",
+            "examples": ["hal_get_tsf_time", "tsf_hal_set_timer_enable",
+                         "hal_mac_tsf_reset", "hal_pwr_interrupt_clr_event"],
+        },
+        "FE": {
+            "accesses": 125, "distinct_addresses": 62,
+            "observed_range": "0x60006000-0x600061e4",
+            "reason": "RF front-end: PA/antenna switching per TX/RX turn and "
+                      "TX digital gains programmed by the PHY init blob",
+            "examples": ["ant_wifitx_cfg", "ant_wifirx_cfg",
+                         "ram_set_pbus_reg", "force_txrx_off"],
+        },
+        "RTCCNTL": {
+            "accesses": 118, "distinct_addresses": 43,
+            "observed_range": "0x60008000-0x600081fc",
+            "reason": "SoC clock tree and slow-clock calibration the modem "
+                      "sleep timing is derived from",
+            "examples": ["esp_clk_init", "esp_clk_slowclk_cal_get"],
+        },
+        "BT_BB": {
+            "accesses": 62, "distinct_addresses": 41,
+            "observed_range": "0x60011008-0x600118b0",
+            "reason": "coexistence peer baseband parameters (detect, gain, "
+                      "filter) programmed during bt/coex init",
+            "examples": ["bt_bb_corr_set", "bt_bb_detect_set"],
+        },
+        "MODEM_COEX": {
+            "accesses": 35, "distinct_addresses": 16,
+            "observed_range": "0x60031000-0x60031530",
+            "reason": "BT/Wi-Fi arbitration: PTI priority table, scheduler "
+                      "reset and sleep-clock sync touched per coex slot",
+            "examples": ["coex_pti_v2", "btdm_sleep_clock_sync"],
+        },
+        "WIFI_TX_CRYPTO": {
+            "accesses": 34, "distinct_addresses": 20,
+            "observed_range": "0x600342f8-0x60034424",
+            "reason": "hardware crypto key table 0x60034400-0x60034424 "
+                      "(set/get/clear key entry) plus TX PLCP/HT-SIG vectors",
+            "examples": ["hal_crypto_set_key_entry",
+                         "hal_crypto_get_key_entry",
+                         "hal_crypto_clr_key_entry", "mac_tx_set_htsig"],
+        },
+        "SYSCON": {
+            "accesses": 25, "distinct_addresses": 11,
+            "observed_range": "0x60026000-0x600260c0",
+            "reason": "wifi module clock-enable/reset gating around PHY use",
+            "examples": ["phy_module_enable", "btbb_wifi_bb_cfg2"],
+        },
+        "NRX": {
+            "accesses": 10, "distinct_addresses": 7,
+            "observed_range": "0x6001cc0c-0x6001cd0c",
+            "reason": "receiver calibration in the PHY bring-up blob",
+            "examples": ["register_chipv7_phy", "phy_freq_correct"],
+        },
+        "BB": {
+            "accesses": 3, "distinct_addresses": 3,
+            "observed_range": "0x6001d018-0x6001d054",
+            "reason": "baseband spur coefficients and frequency correction",
+            "examples": ["spur_coef_cfg_new", "phy_freq_correct"],
+        },
+        "FE2": {
+            "accesses": 1, "distinct_addresses": 1,
+            "observed_range": "0x600050f0-0x600050f0",
+            "reason": "single FE2 power-up touch from rtc_sleep_pu",
+            "examples": ["rtc_sleep_pu"],
+        },
+    },
+    # Register-level pins that the 0060 stub design is justified by.
+    "key_registers": {
+        "0x60034400": {"accesses": 3,
+                       "functions": ["hal_crypto_clr_key_entry",
+                                     "hal_crypto_get_key_entry",
+                                     "hal_crypto_set_key_entry"],
+                       "meaning": "crypto key-entry CSR: write key, read "
+                                  "back, clear"},
+        "0x60033c3c": {"accesses": 1,
+                       "functions": ["hal_mac_interrupt_get_event"],
+                       "meaning": "MAC interrupt event get (hardware-set)"},
+        "0x60033c40": {"accesses": 3,
+                       "functions": ["hal_deinit", "hal_init",
+                                     "hal_mac_interrupt_clr_event"],
+                       "meaning": "MAC interrupt event clear (W1C)"},
+        "0x60035000": {"accesses": 43,
+                       "functions": ["clear_bss_queue", "cnx_bss_alloc"],
+                       "meaning": "hottest wdev status/queue word"},
+        "0x6003500c": {"accesses": 7,
+                       "functions": ["hal_get_sta_tsf", "hal_get_tsf_time"],
+                       "meaning": "TSF timer low word"},
+        "0x6003507c": {"accesses": 3,
+                       "functions": ["esp_random"],
+                       "meaning": "TRNG — the only WDEV word QEMU models"},
+        "0x60033ca8": {"accesses": 2,
+                       "functions": ["hal_mac_get_txq_state"],
+                       "meaning": "TX-queue state, drain wait reads this"},
+        "0x60035118": {"accesses": 1,
+                       "functions": ["hal_pwr_interrupt_get_event"],
+                       "meaning": "modem-sleep power interrupt get"},
+    },
+}
+
+
+def verify_baseline(report: dict) -> list:
+    """Compare a freshly generated inventory report against FACTORY_BASELINE.
+
+    Returns a list of human-readable mismatch strings; empty means the
+    pinned factory numbers still reproduce from the image."""
+    problems = []
+    for key, want in FACTORY_BASELINE["symbols"].items():
+        got = report.get("symbols", {}).get(key)
+        if got != want:
+            problems.append(f"symbols.{key}: expected {want}, got {got}")
+    access = report.get("firmware_modem_access", {})
+    seen = sum(row["accesses"] for row in access.values())
+    if seen != FACTORY_BASELINE["total_l32r_modem_accesses"]:
+        problems.append(f"total l32r accesses: expected "
+                        f"{FACTORY_BASELINE['total_l32r_modem_accesses']}, "
+                        f"got {seen}")
+    for name, want in FACTORY_BASELINE["windows"].items():
+        got = access.get(name)
+        if got is None:
+            problems.append(f"{name}: missing from report")
+            continue
+        for field in ("accesses", "distinct_addresses", "observed_range"):
+            if got[field] != want[field]:
+                problems.append(f"{name}.{field}: expected {want[field]!r}, "
+                                f"got {got[field]!r}")
+    keys = report.get("key_register_counts", {})
+    for addr, want in FACTORY_BASELINE["key_registers"].items():
+        got = keys.get(addr)
+        if got is None:
+            problems.append(f"key register {addr}: missing from report")
+        elif got["accesses"] != want["accesses"]:
+            problems.append(f"key register {addr}: expected "
+                            f"{want['accesses']} accesses, got "
+                            f"{got['accesses']}")
+    return problems
+
+
 
 def parse_l32r_targets(text: str) -> list:
     """Literal-pool targets of l32r loads, attributed to their function.
@@ -230,6 +403,21 @@ def group_targets(targets: list) -> dict:
             for window, data in grouped.items()}
 
 
+def key_register_counts(targets: list) -> dict:
+    """Per-address access counts for the pinned registers in the baseline."""
+    pinned = {int(addr, 16) for addr in FACTORY_BASELINE["key_registers"]}
+    counts: dict[int, dict] = {}
+    for _, function, address in targets:
+        if address in pinned:
+            entry = counts.setdefault(address, {"accesses": 0,
+                                                "functions": set()})
+            entry["accesses"] += 1
+            entry["functions"].add(function)
+    return {"0x%08x" % address: {"accesses": data["accesses"],
+                                 "functions": sorted(data["functions"])}
+            for address, data in sorted(counts.items())}
+
+
 DEVICE_HELP_LINE = re.compile(r'^name "(?P<name>[^"]+)"', re.MULTILINE)
 
 
@@ -264,6 +452,7 @@ def build_report(nm_text: str, objdump_text: str, mtree_text: str | None,
         "symbols": {"total_defined": len(symbols),
                     **subsystem_counts(symbols)},
         "firmware_modem_access": group_targets(targets),
+        "key_register_counts": key_register_counts(targets),
         "qemu_window_coverage": [classify_window(w, regions) for w in windows()]
                                  if regions else [],
         "qemu_device_types": None,
@@ -275,6 +464,7 @@ def build_report(nm_text: str, objdump_text: str, mtree_text: str | None,
         names = parse_device_help(device_help_text)
         report["qemu_device_types"] = {"total": len(names),
                                        **radio_device_names(names)}
+    report["baseline_mismatches"] = verify_baseline(report)
     return report
 
 
