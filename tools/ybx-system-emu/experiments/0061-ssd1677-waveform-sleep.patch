@@ -1,0 +1,202 @@
+--- a/hw/display/ybx_ssd1677.c
++++ b/hw/display/ybx_ssd1677.c
+@@ -24,11 +24,28 @@
+         } else {
+             s->busy_fall_edges++;
+             if (now > s->busy_started_ms) {
+-                s->busy_high_ms += now - s->busy_started_ms;
++                uint32_t high_ms = now - s->busy_started_ms;
++                s->busy_high_ms += high_ms;
++                switch (s->busy_reason) {
++                case EPD_BUSY_POWER:
++                    s->busy_power_high_ms += high_ms;
++                    break;
++                case EPD_BUSY_WAVEFORM:
++                    s->busy_waveform_high_ms += high_ms;
++                    break;
++                case EPD_BUSY_RESET:
++                    s->busy_reset_high_ms += high_ms;
++                    break;
++                default:
++                    break;
++                }
+             }
+         }
+     }
+     s->busy_level = busy;
++    if (!busy) {
++        s->busy_reason = EPD_BUSY_NONE;
++    }
+     /* Drive unconditionally: the panel releases/asserts the line even when the
+      * model's previous level already matches, so the GPIO input sees it. */
+     qemu_set_irq(s->busy, busy);
+@@ -60,6 +77,16 @@
+         timer_del(s->refresh_timer);
+         epd_set_busy(s, false);
+         epd_clear_ram(s);
++        /* Only a hardware RESET wakes the SSD1677 from deep sleep. */
++        s->deep_sleep = 0;
++    } else if (high && !s->rst_high && s->busy_on_reset_ms) {
++        /* Opt-in fidelity: real panels trail BUSY through the post-reset
++         * boot-load (Ssd1677Driver.cpp:385-388 settles exactly that). */
++        timer_del(s->refresh_timer);
++        s->busy_reason = EPD_BUSY_RESET;
++        epd_set_busy(s, true);
++        timer_mod(s->refresh_timer,
++                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + s->busy_on_reset_ms);
+     }
+     s->rst_high = high;
+ }
+@@ -154,6 +181,12 @@
+         s->ignored_bytes++;
+         return 0xff;
+     }
++    if (s->deep_sleep) {
++        /* Enter Deep-Sleep parked the interface: every later byte, the 0x10
++         * mode byte included, is rejected until hardware RESET. */
++        s->sleep_ignored_bytes++;
++        return 0xff;
++    }
+     if (!s->dc_high) {
+         s->command = byte;
+         s->last_command = byte;
+@@ -164,7 +197,22 @@
+         if (byte == 0x12) {
+             epd_clear_ram(s);
+             timer_del(s->refresh_timer);
+-            epd_set_busy(s, false);
++            if (s->busy_on_reset_ms) {
++                /* SWRESET restarts the panel's internal reset; keep BUSY
++                 * asserted (last writer owns the attribution) instead of
++                 * faking an instant completion the real chip never gives. */
++                s->busy_reason = EPD_BUSY_RESET;
++                epd_set_busy(s, true);
++                timer_mod(s->refresh_timer,
++                          qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
++                          s->busy_on_reset_ms);
++            } else {
++                epd_set_busy(s, false);
++            }
++        } else if (byte == 0x10) {
++            /* ENTER DEEP-SLEEP: the chip answers nothing until RES toggles. */
++            s->deep_sleep = 1;
++            s->sleep_entries++;
+         } else if (byte == 0x20) {
+             /* 0x20 also powers ON/OFF; CTRL2 bit2 starts the
+              * actual pixel-update waveform. Do not count pure
+@@ -180,6 +228,7 @@
+             }
+             /* Real power/booster-only activation ramps in a few ms, a pixel
+              * waveform in hundreds. Default properties keep both at 350 ms. */
++            s->busy_reason = waveform ? EPD_BUSY_WAVEFORM : EPD_BUSY_POWER;
+             epd_set_busy(s, true);
+             timer_mod(s->refresh_timer,
+                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+@@ -237,6 +286,8 @@
+     s->ignored_bytes = s->last_command = s->nonwhite_visible = 0;
+     s->nonwhite_ram_writes = s->command_24_count = s->command_26_count = 0;
+     s->update_ctrl2 = 0;
++    s->deep_sleep = 0;
++    s->sleep_entries = s->sleep_ignored_bytes = 0;
+     s->command = 0;
+     s->dc_high = true;
+     s->rst_high = true;
+@@ -246,6 +297,9 @@
+      * fall edge whose rise was just erased and adds the whole VM uptime. */
+     s->busy_rise_edges = s->busy_fall_edges = s->busy_high_ms = 0;
+     s->busy_started_ms = 0;
++    s->busy_power_high_ms = s->busy_waveform_high_ms = 0;
++    s->busy_reset_high_ms = 0;
++    s->busy_reason = EPD_BUSY_NONE;
+ }
+ static void epd_realize(SSIPeripheral *peripheral, Error **errp)
+ {
+@@ -275,6 +329,18 @@
+                                    &s->busy_fall_edges, OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "busy-high-ms",
+                                    &s->busy_high_ms, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "busy-power-high-ms",
++                                   &s->busy_power_high_ms, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "busy-waveform-high-ms",
++                                   &s->busy_waveform_high_ms, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "busy-reset-high-ms",
++                                   &s->busy_reset_high_ms, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "deep-sleep",
++                                   &s->deep_sleep, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "sleep-entries",
++                                   &s->sleep_entries, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "sleep-ignored-bytes",
++                                   &s->sleep_ignored_bytes, OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "nonwhite-visible",
+                                    &s->nonwhite_visible, OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "last-command",
+@@ -294,6 +360,7 @@
+ static Property epd_properties[] = {
+     DEFINE_PROP_UINT16("busy-waveform-ms", YbxSSD1677State, busy_waveform_ms, 350),
+     DEFINE_PROP_UINT16("busy-power-ms", YbxSSD1677State, busy_power_ms, 350),
++    DEFINE_PROP_UINT16("busy-on-reset-ms", YbxSSD1677State, busy_on_reset_ms, 0),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+--- a/include/hw/display/ybx_ssd1677.h
++++ b/include/hw/display/ybx_ssd1677.h
+@@ -11,6 +11,13 @@
+ #define YBX_EPD_ROW_BYTES 100
+ #define YBX_EPD_SIZE (YBX_EPD_ROW_BYTES * YBX_EPD_HEIGHT)
+ 
++enum EpdBusyReason {
++    EPD_BUSY_NONE = 0,
++    EPD_BUSY_POWER,
++    EPD_BUSY_WAVEFORM,
++    EPD_BUSY_RESET,
++};
++
+ struct YbxSSD1677State {
+     SSIPeripheral parent_obj;
+     qemu_irq busy;
+@@ -29,9 +36,23 @@
+     uint32_t busy_fall_edges;
+     uint32_t busy_high_ms;
+     int64_t busy_started_ms;
+-    /* Both default to the previously hard-coded 350 ms window. */
++    /* Both default to the previously hard-coded 350 ms window.
++     * busy_on_reset_ms is opt-in: 0 keeps the accepted silent-reset drive. */
+     uint16_t busy_waveform_ms;
+     uint16_t busy_power_ms;
++    uint16_t busy_on_reset_ms;
++    /* Window category that armed the current BUSY-high interval; the last
++     * writer owns the interval when windows are chained without a gap. */
++    uint8_t busy_reason;
++    /* Per-category BUSY-high milliseconds: the pooled busy_high_ms alone
++     * cannot separate power cost from a pixel waveform. */
++    uint32_t busy_power_high_ms;
++    uint32_t busy_waveform_high_ms;
++    uint32_t busy_reset_high_ms;
++    /* ENTER DEEP-SLEEP (0x10): interface deaf until hardware RESET. */
++    uint32_t deep_sleep;
++    uint32_t sleep_entries;
++    uint32_t sleep_ignored_bytes;
+     uint32_t nonwhite_visible;
+     uint32_t nonwhite_ram;
+     uint32_t nonwhite_ram_writes;
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -852,6 +852,18 @@
+                          OBJECT(ss->ybx_epd), "busy-fall-edges");
+             object_property_add_alias(OBJECT(ss), "ybx-epd-busy-high-ms",
+                          OBJECT(ss->ybx_epd), "busy-high-ms");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-busy-power-high-ms",
++                         OBJECT(ss->ybx_epd), "busy-power-high-ms");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-busy-waveform-high-ms",
++                         OBJECT(ss->ybx_epd), "busy-waveform-high-ms");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-busy-reset-high-ms",
++                         OBJECT(ss->ybx_epd), "busy-reset-high-ms");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-deep-sleep",
++                         OBJECT(ss->ybx_epd), "deep-sleep");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-sleep-entries",
++                         OBJECT(ss->ybx_epd), "sleep-entries");
++            object_property_add_alias(OBJECT(ss), "ybx-epd-sleep-ignored-bytes",
++                         OBJECT(ss->ybx_epd), "sleep-ignored-bytes");
+         }
+     }
+ 
