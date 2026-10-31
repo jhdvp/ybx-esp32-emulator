@@ -1017,10 +1017,18 @@ class FactoryX4Pro:
                     self._relaunch()
                     return
                 except RuntimeError as exc:
-                    if "QMP closed" not in str(exc):
-                        raise
-                    self._relaunch()
-                    return
+                    message = str(exc)
+                    if "QMP closed" in message:
+                        self._relaunch()
+                        return
+                    if "virtual GT911 must be powered" in message:
+                        # The guest parked the touch rail, so the synthetic
+                        # session cannot be cleared. Replacing the process is
+                        # the same clean state without pretending the device
+                        # accepted input.
+                        self._relaunch()
+                        return
+                    raise
                 try:
                     result = self.qmp("system_reset")
                 except (OSError, RuntimeError, ValueError):

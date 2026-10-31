@@ -135,6 +135,18 @@ class BrowserTouchTests(unittest.TestCase):
         guest._launch.assert_not_called()
         self.assertFalse(guest.tap_lock.locked())
 
+    def test_reboot_relaunches_when_the_guest_parked_the_touch_rail(self):
+        """The guest powers the GT911 rail down after a dialog; the synthetic
+        session then cannot be cleared, so the process is replaced instead."""
+        guest = browser_guest(qmp=Mock(return_value={
+            "error": {"class": "GenericError",
+                      "desc": "virtual GT911 must be powered and ready"}}))
+        guest.reboot()
+        guest._launch.assert_called_once()
+        self.assertEqual(guest.frame, -1)
+        self.assertEqual(guest.png_etag, '"blank"')
+        self.assertFalse(guest.tap_lock.locked())
+
     def test_reboot_touch_clear_failure_skips_reset(self):
         guest = browser_guest(qmp=Mock(return_value={"error": {"desc": "invalid"}}))
         with self.assertRaises(RuntimeError):
