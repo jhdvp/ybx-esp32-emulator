@@ -31,8 +31,10 @@ Guest contract that motivates each gap (fw-092c2be5 FreeInk SDK):
 Each of the three recorded gaps (experiments/0048-batch2-epd-lifecycle.md §3)
 is characterised by a test against the *accepted* mirror — it must fail on the
 fidelity invariant — and the same scenario passes against the patched mirror.
-No QEMU is run here; probe_x4pro_epd_waveform_qtest.py is the compiled-binary
-counterpart for the orchestrator.
+0061 proposed this file; 0069 applied the proposal to an isolated QEMU copy,
+built it, and ran probe_x4pro_epd_waveform_qtest.py against the result — the
+CompiledBinaryMeasurements class below pins what that run actually measured
+(including the fall-edge correction to the pre-0069 Panel mirror).
 """
 from __future__ import annotations
 
@@ -97,9 +99,10 @@ class Panel:
             if busy:
                 self.busy_rise_edges += 1
                 self.busy_started_ms = now
-            elif now > self.busy_started_ms:
-                self.busy_fall_edges += 1
-                self.busy_high_ms += now - self.busy_started_ms
+            else:
+                self.busy_fall_edges += 1     # :25, recorded even at zero ms
+                if now > self.busy_started_ms:  # :26-28, only the duration
+                    self.busy_high_ms += now - self.busy_started_ms
         self.busy_level = int(busy)               # drives unconditionally
 
     # --- epd_clear_ram:40-54 ---------------------------------------------------
@@ -261,7 +264,9 @@ class Panel:
 
 
 class PatchedPanel(Panel):
-    """Mirror of experiments/0061-ssd1677-waveform-sleep.patch.
+    """Mirror of experiments/0061-ssd1677-waveform-sleep.patch (device-model
+    hunks identical in experiments/0069-ssd1677-waveform-sleep-v2.patch; 0069
+    only added the QOM read aliases for the window properties).
 
     Adds: busy_reason per armed window (NONE/POWER/WAVEFORM/RESET) with
     cumulative busy_power/waveform/reset_high_ms; deep-sleep state entered by
@@ -294,16 +299,17 @@ class PatchedPanel(Panel):
             if busy:
                 self.busy_rise_edges += 1
                 self.busy_started_ms = now
-            elif now > self.busy_started_ms:
-                self.busy_fall_edges += 1
-                high = now - self.busy_started_ms
-                self.busy_high_ms += high
-                if self.busy_reason == self.POWER:
-                    self.busy_power_high_ms += high
-                elif self.busy_reason == self.WAVEFORM:
-                    self.busy_waveform_high_ms += high
-                elif self.busy_reason == self.RESET:
-                    self.busy_reset_high_ms += high
+            else:
+                self.busy_fall_edges += 1         # ybx_ssd1677.c:25
+                if now > self.busy_started_ms:    # :26-28, duration only
+                    high = now - self.busy_started_ms
+                    self.busy_high_ms += high
+                    if self.busy_reason == self.POWER:
+                        self.busy_power_high_ms += high
+                    elif self.busy_reason == self.WAVEFORM:
+                        self.busy_waveform_high_ms += high
+                    elif self.busy_reason == self.RESET:
+                        self.busy_reset_high_ms += high
         self.busy_level = int(busy)
         if not busy:
             self.busy_reason = self.NONE
@@ -585,6 +591,81 @@ class ProbeContract(unittest.TestCase):
         p.paint(n=4)
         self.assertEqual(p.sleep_ignored_bytes,
                          1 + byte_count(paint_sequence(4)))
+
+
+class CompiledBinaryMeasurements(unittest.TestCase):
+    """Cases pinned by the 0069 rebuild — no assertion here is a duration the
+    compiled binary did not measure.  probe_x4pro_epd_waveform_qtest.py was
+    run inside ybx-qemu-builder:20261029 against
+    qemu-0069-waveform-apply-20261031/build-ybx/qemu-system-xtensa
+    (SHA-256 7186bf9ce2d241f33ebbc73ac526513abce2228a0b2ca2796fa5e6ed1fc103c8,
+    factory ROM 5b950be9…, factory flash 206ed966…): 19/19 default-phase and
+    25/25 windows-phase checks, release windows measured 350/350 (default)
+    and 40/350/10 (windows) virtual milliseconds."""
+
+    def test_fall_edge_is_recorded_even_without_elapsed_milliseconds(self):
+        # The accepted epd_set_busy counts the fall edge before the
+        # duration guard (ybx_ssd1677.c:24-29); the pre-0069 mirror had
+        # nested them, which the compiled run disproved: the windows phase
+        # cancels the power-off window in the same virtual millisecond
+        # (probe step 3 -> reset_pulse) yet still reports balanced edges.
+        for p in (Panel(power_ms=40), PatchedPanel(power_ms=40)):
+            p.activation(0xC0)
+            self.assertEqual(p.busy_rise_edges, 1)
+            p.reset_gpio(False)               # same now=0 as the rise
+            self.assertEqual(p.busy_fall_edges, 1)
+            self.assertEqual(p.busy_high_ms, 0)
+            if isinstance(p, PatchedPanel):
+                self.assertEqual(p.busy_power_high_ms, 0)
+
+    def test_windows_phase_counters_replicate_the_compiled_run(self):
+        # Sequence and outcome of the compiled windows phase, last-writer
+        # attribution included: busy-power-high-ms 40 (the startup-release
+        # interval is merged into step 1's power window — busy was already
+        # high), busy-waveform-high-ms 700, busy-reset-high-ms 10 (only the
+        # wake reset), pooled 750, edges 5/5, frames 2.
+        p = PatchedPanel(power_ms=40, waveform_ms=350, reset_ms=10)
+        p.reset_gpio(False)                   # GPIO connect delivers low
+        p.reset_gpio(True)                    # board-init release: rise #1
+        self.assertEqual(p.busy_level, 1)     # measured "startup idle busy=1"
+        p.activation(0xC0)                    # merged: no second rise
+        p.advance(40)                         # fall #1 -> POWER 40
+        self.assertEqual((p.busy_power_high_ms, p.busy_reset_high_ms), (40, 0))
+        p.paint()                             # rise #2
+        p.advance(350)                        # fall #2 -> WAVEFORM 350
+        p.cmd(0x22); p.data(0x03); p.cmd(0x20)  # power-off arms at 390 (rise #3)
+        p.cmd(0x10); p.data(0x03)             # sleep: mode byte rejected
+        p.paint()                             # 8 bytes rejected
+        p.cmd(0x12)                           # SW_RESET rejected while asleep
+        self.assertEqual(p.deep_sleep, 1)
+        self.assertEqual(p.sleep_ignored_bytes, 1 + 8 + 1)
+        p.reset_gpio(False)                   # wake; cancels the 40 ms window
+        p.advance(10)                         # in the same ms: no attribution
+        p.reset_gpio(True)                    # rise #4, reset window
+        p.advance(10)                         # fall #4 -> RESET 10
+        self.assertEqual(p.busy_reset_high_ms, 10)
+        p.paint()                             # rise #5
+        p.advance(350)                        # fall #5 -> WAVEFORM +350
+        self.assertEqual(p.busy_power_high_ms, 40)
+        self.assertEqual(p.busy_waveform_high_ms, 700)
+        self.assertEqual(p.busy_high_ms, 750)
+        self.assertEqual((p.busy_rise_edges, p.busy_fall_edges), (5, 5))
+        self.assertEqual(p.frames, 2)
+
+    def test_probe_window_overrides_use_the_structured_global_form(self):
+        # "-global ybx.ssd1677.busy-power-ms=40" silently does nothing:
+        # sscanf("%63[^.=]") truncates the driver to "ybx"
+        # (system/qdev-monitor.c:1188) and QEMU only warns "has invalid
+        # class name" on stderr.  The first windows-phase run measured
+        # power_release_ms=None/busy-power-high-ms=0 because of exactly this.
+        from probe_x4pro_epd_waveform_qtest import global_window_args
+        args = global_window_args()
+        pairs = [args[i + 1] for i in range(len(args)) if args[i] == "-global"]
+        self.assertEqual(len(pairs), 3)
+        for pair in pairs:
+            self.assertTrue(pair.startswith("driver=ybx.ssd1677,property="),
+                            pair)
+            self.assertNotIn("ybx.ssd1677.busy", pair)
 
 
 if __name__ == "__main__":

@@ -9,8 +9,8 @@ Two launches of the patched binary:
   * "default" — no -global overrides: the panel must behave exactly like the
     accepted build (350 ms window for power and waveform, RESET pulse keeps
     BUSY low) while the new deep-sleep gate rejects post-sleep painting.
-  * "windows" — -global ybx.ssd1677.busy-power-ms=40,
-    ybx.ssd1677.busy-waveform-ms=350, ybx.ssd1677.busy-on-reset-ms=10, so
+  * "windows" — structured-form globals driver=ybx.ssd1677,property=
+    busy-power-ms,value=40 / busy-waveform-ms=350 / busy-on-reset-ms=10, so
     power cost, pixel waveform and post-reset BUSY become separately
     measurable through the busy-*-high-ms aliases.
 
@@ -191,13 +191,26 @@ class Epd:
         return None
 
 
+def global_window_args():
+    """-global argv fragment for the "windows" phase.
+
+    The short "-global driver.prop=value" form parses the driver with
+    "%63[^.=]" (system/qdev-monitor.c:1188): it truncates "ybx.ssd1677" to
+    "ybx" and QEMU then only warns "global ybx.ssd1677... has invalid class
+    name" on stderr while the property silently stays at its default.  Only
+    the structured driver=/property=/value= form reaches a dotted type name;
+    verified against the rebuilt binary in 0069.
+    """
+    return [
+        "-global", f"driver=ybx.ssd1677,property=busy-power-ms,value={WINDOW_POWER_MS}",
+        "-global", f"driver=ybx.ssd1677,property=busy-waveform-ms,value={WINDOW_WAVEFORM_MS}",
+        "-global", f"driver=ybx.ssd1677,property=busy-on-reset-ms,value={WINDOW_RESET_MS}",
+    ]
+
+
 def run_phase(qemu, rom, phase, checks):
     """One QEMU launch; returns the checks dict. Raises on missing 0061 props."""
-    globals_ = [] if phase == "default" else [
-        "-global", f"ybx.ssd1677.busy-power-ms={WINDOW_POWER_MS}",
-        "-global", f"ybx.ssd1677.busy-waveform-ms={WINDOW_WAVEFORM_MS}",
-        "-global", f"ybx.ssd1677.busy-on-reset-ms={WINDOW_RESET_MS}",
-    ]
+    globals_ = [] if phase == "default" else global_window_args()
     expected_window = 350 if phase == "default" else WINDOW_POWER_MS
     out = checks
 
@@ -232,10 +245,30 @@ def run_phase(qemu, rom, phase, checks):
                 qt.wr(GPIO + R["OUT_W1TC"], 1 << CS)
                 for name in ("deep-sleep", "sleep-entries", "sleep-ignored-bytes",
                              "busy-power-high-ms", "busy-waveform-high-ms",
-                             "busy-reset-high-ms"):
+                             "busy-reset-high-ms", "busy-on-reset-ms"):
                     epd.prop(name)  # raises KeyError on a pre-0061 build
 
-                note("idle", (epd.busy(), epd.prop("deep-sleep")), (0, 0))
+                if phase == "windows":
+                    # The opt-in windows must be visible on the device itself:
+                    # a truncated "-global ybx.ssd1677.prop=" never errors,
+                    # it only warns on stderr, so verify through the aliases.
+                    note("power_window_applied", epd.prop("busy-power-ms"),
+                         WINDOW_POWER_MS)
+                    note("waveform_window_applied",
+                         epd.prop("busy-waveform-ms"), WINDOW_WAVEFORM_MS)
+                    note("reset_window_applied", epd.prop("busy-on-reset-ms"),
+                         WINDOW_RESET_MS)
+                    # Measured at startup (0069): the GPIO model delivers the
+                    # RESET line low on connect, so the board-init OUT write
+                    # above is a real release-reassertion edge; with
+                    # busy-on-reset-ms>0 the panel answers it with trailing
+                    # BUSY before the first activation.  The pending window is
+                    # merged into step 1's activation by the last-writer
+                    # attribution rule.
+                    note("startup_release_trails_busy", epd.busy(), 1)
+                    note("startup_sleep_idle", epd.prop("deep-sleep"), 0)
+                else:
+                    note("idle", (epd.busy(), epd.prop("deep-sleep")), (0, 0))
 
                 # 1) A power-only activation must release after busy-power-ms
                 #    (350 in the default phase) and count only into
@@ -320,7 +353,7 @@ def main():
     p.add_argument("--rom", type=Path, required=True)
     p.add_argument("--report", type=Path,
                    default=Path(__file__).resolve().parent /
-                   "experiments/0061-epd-waveform-qtest-report.json")
+                   "experiments/0069-epd-waveform-qtest-report.json")
     a = p.parse_args()
     result = {"qemu_binary": str(a.qemu),
               "machine": "esp32s3,ybx-x4pro-spi2=on,ybx-x4pro-epd=on",
@@ -330,15 +363,23 @@ def main():
         checks = {}
         try:
             run_phase(a.qemu, a.rom, phase, checks)
-        except KeyError as exc:
+        except Exception as exc:
+            # KeyError: pre-0061 binary lacks the new aliases.  OSError:
+            # QEMU exits at startup when -global names a property the
+            # shipped device does not have (busy-on-reset-ms), so the QMP
+            # socket resets before the handshake finishes.  The per-phase
+            # check dict plus qemu_stderr_tail stay in the report, so a real
+            # model bug is still diagnosable even though it lands here.
             checks["0061_aliases"] = {"value": f"absent ({exc})",
                                       "expected": "present", "pass": False}
         result["phases"][phase] = checks
-        failed += [f"{phase}/{k}" for k, v in checks.items() if not v["pass"]]
+        failed += [f"{phase}/{k}" for k, v in checks.items()
+                   if isinstance(v, dict) and not v["pass"]]
     result["failed"] = failed
     a.report.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"failed": failed,
-                      "checks": {ph: {k: v["pass"] for k, v in c.items()}
+                      "checks": {ph: {k: v["pass"] for k, v in c.items()
+                                      if isinstance(v, dict)}
                                  for ph, c in result["phases"].items()}},
                      indent=2))
     sys.exit(0 if not failed else 1)
