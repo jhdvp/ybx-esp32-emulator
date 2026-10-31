@@ -501,3 +501,49 @@ firmware. Verified live: the operator's own builds boot and paint, the
 application-only image and any path traversal are refused, and the upstream
 CrossPoint and inkMOD images are documented as not booting yet (the crash
 follows the CrossPoint-built bootloader, not the application).
+
+## 0068 — the SIGSEGV was a PSRAM bounds bug, not the bootloader
+
+`0068-bootloader-flash-boot-matrix-20261031.md` proves that the crash that
+blocked every upstream firmware image was a host-side crash in QEMU's emulated
+octal PSRAM (`hw/misc/ssi_psram.c` dereferences `ptr[-1]` for a negative guest
+address). The bootloaders of all candidate images are byte-identical; what
+differed was 78 erased payload bytes in the nvs/otadata/phy windows, whose page
+writes clock the PSRAM state machine into an out-of-bounds decode. The fix
+(`0068-esp32s3-bootloader-flash-fix.patch`) is three bounds hunks and is now
+part of the audited chain. After it, stock CrossPoint 2.0.0rc and 1.6.5 boot
+and paint in the emulator; inkMOD starts but paints nothing.
+
+## 0069 — SSD1677 waveform, deep sleep and BUSY around reset, compiled
+
+`0069-epd-waveform-apply-20261031.md` applies the 0061 model change to a
+rebuilt QEMU and measures it: split power-on and pixel-refresh BUSY windows, a
+deep-sleep state that refuses a post-sleep paint, and BUSY trailing high
+around a hardware reset. The patch
+(`0069-ssd1677-waveform-sleep-v2.patch`) applies cleanly to the pinned
+checkout; the running emulator still ships the old model.
+
+## 0070 — guest console: the guest's own UART output
+
+`0070-guest-uart-log-20261031.md` adds `guest_console.py`, a bounded ring
+buffer that keeps the tail of the guest's UART0 output, so a firmware that
+fails to start can be read instead of guessed. The bridge does not use it yet.
+
+## 0071 — Wi-Fi radio Stage 1: an opt-in register stub
+
+`0071-wifi-radio-stage1-20261031.md` implements Stage 1 of the 0060 roadmap as
+a compiled opt-in device: deterministic register answers, write-ack filtering,
+frozen TSF and counters, and no fabricated association, address or frame.
+
+## 0072 — the reproducible QEMU build, executed
+
+`0072-reproducible-build-e2e-20261031.md` records the clean-room build from
+the pinned base through the whole chain, the resulting binary SHA-256 and the
+comparison with the accepted binary, plus `verify_reproducible_build.sh` to
+repeat it.
+
+## 0073 — the firmware boot matrix, measured
+
+`0073-firmware-boot-matrix-20261031.md` boots every candidate image in its own
+QEMU instance and records frames, the first frame SHA-256 and the verdict, so
+the "which image boots" table is produced by a tool instead of written by hand.

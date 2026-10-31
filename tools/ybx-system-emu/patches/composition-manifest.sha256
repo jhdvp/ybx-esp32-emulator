@@ -27,6 +27,7 @@ experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch
 experiments/0043-s3-optin-crosscore-ipi-counters.patch
 experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch
 experiments/0051-busy-telemetry-reset-order.patch
+experiments/0068-esp32s3-bootloader-flash-fix.patch
 [patches]
 905ad6078d29aca14866320f86aaf95ee2631a9aed056c18a5dc9a77af3be795  experiments/0002-s3-rom-dram-experiment.patch
 b28c0fa1fd1af8d906bf04f3e3ca62b002f71e5bfbaeae1eaa6332bd89927d5f  experiments/0004-s3-rom-initializer-trial.patch
@@ -53,6 +54,7 @@ db0e973bea23f16f641053821e8dbada2c870fca098809fa89bdc84f5e3d5e77  experiments/00
 19d7036705965b20398b3714e78d6c678463e680ae024840b8507b6b2b9b5ba8  experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch
 d54b362720ce28103657dfedc97cb17aaff45911af9935f722dd3c70611e2bfa  experiments/0043-s3-optin-crosscore-ipi-counters.patch
 198707e06fc68342e3180b354f398b52dd25b0af85bfe64c25e81989699db2cc  experiments/0051-busy-telemetry-reset-order.patch
+75d2639976c40f73980bfe9de13a7ab3eb3590b831ab74e805ca7dbec523399f  experiments/0068-esp32s3-bootloader-flash-fix.patch
 2029f49895c873ae3164ae5766329c470f37c9a561569797f413d44ae4e0ae53  patches/0001-esp32c3-gdma-interrupt-layout.patch
 81f4e296d3e66dadc51e433067d2040c4eb97caca055567647c404f6009ceddf  patches/0003-usb-serial-jtag-tx-ready.patch
 b3f9123da0f5316d87b0da7fbb897d71dbe0467deb1380a03e84298be2a08f45  patches/0005-usb-serial-jtag-output.patch
@@ -65,6 +67,7 @@ e84c3dc82451bc513f28380ddc9d5113adbe54a6a733223bd09e3d3ed3a0bb63  hw/i2c/esp32_i
 84aa2e8cc5c13fe40ea22a5981a2a2114e9b36d47eeefcae161c57fcd755cb5e  hw/i2c/meson.build
 41d48b238ed25c2638c825f67fe89680c0516866c3a7c8f33b735db2bbc0c2b5  hw/i2c/ybx_x4pro_i2c.c
 31217ed0eb145a3fec8cae8902ef653d4fbdf2a57a16d7fb48ecf6323e1c9f90  hw/misc/esp32c3_jtag.c
+cbf6f678157c36d45d9011a11f0295274fbdeaa7efbcfae7e4545179806f6e6a  hw/misc/ssi_psram.c
 ffba13bc8f04b58ca69a501d4e2ddb2ad1a3655907e15b7be9a10e7f162aad1c  hw/riscv/esp32c3.c
 467260c811ecf85723b8459041c878caa7efebb1346b5f8d102319438353348e  hw/sd/dwc_sdmmc.c
 ca2d5bad1c27ed1b2be471b0d8ae178f66438babe3999c073529b08e0bd4f4fe  hw/ssi/meson.build

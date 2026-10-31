@@ -52,6 +52,7 @@
 | ROM / firmware pickers | 🟢 **Working** | Choose the guest ROM and the guest firmware image from read-only folders on the Mac; the active image, its SHA-256 and its provenance are shown, and a custom build is never presented as the factory image ([0066](tools/ybx-system-emu/experiments/0066-batch3-rom-selection.md), [0067](tools/ybx-system-emu/experiments/0067-batch3-firmware-picker-20261031.md)) |
 | GUI navigation acceptance | 🟢 **Working** | Home → More → YBX Settings → System settings → Back verified against the running guest with per-step SSD1677 SHA gates ([0062](tools/ybx-system-emu/experiments/0062-batch3-nav-automation.md)) |
 | Patched QEMU build | 🟢 **Reproducible (composition)** | The audited chain composes deterministically from the pinned base `febae18` with a signed manifest; the container build is opt-in and not yet executed end to end ([0063](tools/ybx-system-emu/experiments/0063-batch3-repro-build.md)) |
+| Upstream CrossPoint / inkMOD images | 🟡 **Boots (CrossPoint)** | Stock CrossPoint 2.0.0rc and 1.6.5 boot and paint their own UI after the 0068 PSRAM bounds fix; inkMOD starts but paints nothing ([0068](tools/ybx-system-emu/experiments/0068-bootloader-flash-boot-matrix-20261031.md)) |
 | Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Factory register accesses are pinned and an opt-in non-fake stub is proposed ([0060](tools/ybx-system-emu/experiments/0060-batch3-wifi-radio.md)); no scan, association, address, frame or TLS is produced |
 | TLS and cloud services | ⚪ **Unverified** | No verified end-to-end guest TLS session; do not infer it from host networking |
 | Power / sleep / waveform timing | 🟡 **Experimental** | Host lifecycle models and telemetry, not physical E-Ink fidelity; the three known SSD1677 gaps are modelled and a fix is proposed ([0061](tools/ybx-system-emu/experiments/0061-batch3-epd-waveform.md)) |
@@ -154,7 +155,8 @@ tools/ybx-system-emu/
 - [x] Multi-step GUI acceptance runner with per-step frame SHA gates
 - [x] Read-only browser telemetry (BUSY edges, BUSY duration, frame counters)
 - [x] In-page pickers for the guest ROM and the guest firmware image
-- [ ] Execute the reproducible container build end to end and publish its binary SHA
+- [x] Execute the reproducible container build end to end and publish its binary SHA
+- [x] Bounds-check the emulated octal PSRAM so upstream firmware images can boot
 - [ ] Add proper ESP32-S3 Wi-Fi radio/MAC support and isolated connection testing
 - [ ] Expand SSD1677 waveform, sleep/reset and power correctness in the running emulator
 - [ ] Extend device fidelity to X3, X4, further controller/panel variants

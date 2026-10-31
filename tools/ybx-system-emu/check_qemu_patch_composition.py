@@ -66,10 +66,17 @@ TELEMETRY_CHAIN = (
     "experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch",
     "experiments/0051-busy-telemetry-reset-order.patch",
 )
-X4PRO_FULL_CHAIN = X4PRO_0042_CHAIN + TELEMETRY_CHAIN
+# 0068 bounds-checks the emulated octal PSRAM: without it a guest that writes
+# erased flash pages makes the PSRAM model dereference ptr[-1] and QEMU dies
+# with SIGSEGV. Stock CrossPoint and inkMOD images need it to boot at all.
+PSRAM_CHAIN = (
+    "experiments/0068-esp32s3-bootloader-flash-fix.patch",
+)
+X4PRO_FULL_CHAIN = X4PRO_0042_CHAIN + TELEMETRY_CHAIN + PSRAM_CHAIN
 AUDITED_CHAINS = (X4PRO_0042_CHAIN, X4PRO_FULL_CHAIN)
 CHAIN_TAIL = {X4PRO_0042_CHAIN: "experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch",
-              X4PRO_FULL_CHAIN: "experiments/0051-busy-telemetry-reset-order.patch"}
+              X4PRO_FULL_CHAIN:
+                  "experiments/0068-esp32s3-bootloader-flash-fix.patch"}
 MODEL_TEST_0043 = HERE / "experiments" / "0043-agent-epd-busy-model-test.c"
 
 # 0042 must expose GPIO_PCPU_INT: ESP-IDF S3 gpio_ll_get_intr_status() reads
