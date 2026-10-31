@@ -65,16 +65,20 @@ class HelperTests(unittest.TestCase):
 
     def test_full_chain_is_0042_prefix_plus_ordered_telemetry(self):
         self.assertEqual(chk.X4PRO_FULL_CHAIN,
-                         chk.X4PRO_0042_CHAIN + chk.TELEMETRY_CHAIN)
+                         chk.X4PRO_0042_CHAIN + chk.TELEMETRY_CHAIN
+                         + chk.PSRAM_CHAIN)
         self.assertEqual(chk.TELEMETRY_CHAIN[0],
                          "experiments/0043-s3-optin-crosscore-ipi-counters.patch")
         self.assertEqual(chk.TELEMETRY_CHAIN[1],
                          "experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch")
-        # 0051 rewrites 0037 hunks, so it must stay last.
+        # 0051 rewrites 0037 hunks, so it must stay last inside the telemetry
+        # layer; the PSRAM bounds fix (0068) follows it.
         self.assertEqual(chk.TELEMETRY_CHAIN[-1],
                          "experiments/0051-busy-telemetry-reset-order.patch")
+        self.assertEqual(chk.PSRAM_CHAIN,
+                         ("experiments/0068-esp32s3-bootloader-flash-fix.patch",))
         self.assertEqual(chk.X4PRO_FULL_CHAIN[-1],
-                         "experiments/0051-busy-telemetry-reset-order.patch")
+                         "experiments/0068-esp32s3-bootloader-flash-fix.patch")
 
     def test_0043_telemetry_is_audited_not_excluded(self):
         name = "experiments/0043-s3-optin-crosscore-ipi-counters.patch"
