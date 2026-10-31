@@ -8,7 +8,9 @@ import argparse
 import email.utils
 import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -22,10 +24,35 @@ from probe_x4pro_touch_injection_qtest import qmp_connect
 
 W, H = 480, 800
 
+# SHA-256 values verified against the operator's read-only factory media on
+# 2026-10-31 (see experiments/0066-batch3-rom-selection.md). Anything else is
+# a custom ROM of unknown provenance and is reported as such.
+KNOWN_FACTORY_IMAGES = {
+    # qa-20261029/s3-full-rom-generator-test.bin (the bridge --rom, -L blob)
+    "5b950be93a30610322a3b46049e4095cdda04f33f09fa13a9a9a6167b5994bd9":
+        "factory-rom",
+    # qa-20261029/s3-flash-complete-rom-test.bin (the factory flash image)
+    "206ed9661bd71477d1a54397c5a2cfe490179a3f59ab094f1e7421745c609523":
+        "factory-flash",
+}
+PROVENANCE_LABELS = {
+    "factory-rom": "Factory ROM image (SHA-256 matches the known factory -rom blob)",
+    "factory-flash": "Factory flash image (SHA-256 matches the known factory flash)",
+    "custom": "Custom ROM of unknown provenance (SHA-256 matches no known factory image)",
+    "unhashed": "Provenance unverified (file too large to hash)",
+}
+
 
 class BadRequestError(ValueError):
     """Client sent something the bridge cannot act on. Maps to HTTP 400."""
     kind = "bad-request"
+    http_status = 400
+
+
+class RomNotFoundError(BadRequestError):
+    """A well-formed name that is not a file in --rom-dir. Maps to HTTP 404."""
+    kind = "rom-not-found"
+    http_status = 404
 
 
 class GuestError(RuntimeError):
@@ -87,6 +114,25 @@ def guest_ready_for_touch(frames):
     return frames >= 2
 
 
+def sha256_file(path, max_bytes):
+    """Streaming SHA-256 of a candidate ROM file.
+
+    Returns None when the file is larger than max_bytes (even if it only
+    grows over the limit mid-read); OSError propagates to the caller, which
+    decides how to report an unreadable file. Never returns a fabricated hash.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+            remaining -= len(chunk)
+        return None
+
+
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport"
 content="width=device-width,initial-scale=1,user-scalable=no">
@@ -105,12 +151,15 @@ strong{color:#161615}
 code{font-size:12px;word-break:break-word}
 button{background:#242421;color:#fff;border:0;border-radius:6px;padding:11px 13px;font-size:13px;cursor:pointer}
 button:disabled{opacity:.45;cursor:default}
+h2{font-size:15px;margin:20px 0 6px}
+select{width:100%;padding:9px;border-radius:6px;border:1px solid #a8a79e;font-size:13px;background:#fff;color:#171715}
+.romerror{color:#8c2f2f;font-size:13px}
 small{color:#66665e;display:block;margin-top:11px;line-height:1.6}
 @media(max-width:680px){body{align-items:start}main{display:flex;flex-direction:column;align-items:center;padding:12px;gap:16px}.device{padding:12px;width:min(100%,480px)}.details{width:min(100%,480px)}}
 </style></head><body><main>
 <div class="device"><img id="screen" alt="Real SSD1677 framebuffer, YBX X4 Pro"
 draggable="false" /></div>
-<div class="details"><h1>YBX X4 Pro <small>Original factory firmware · QEMU ESP32-S3</small></h1>
+<div class="details"><h1>YBX X4 Pro <small>QEMU ESP32-S3 · active ROM shown below</small></h1>
 <p>The display is the <strong>real guest-written SSD1677 480×800 RAM</strong>,
 not an HTML mockup. Tap directly on the reader screen to send a
 150 ms GT911 touch to the virtual device.</p>
@@ -119,6 +168,12 @@ not an HTML mockup. Tap directly on the reader screen to send a
 <p id="metrics"><small>BUSY telemetry: loading…</small></p>
 <button id="refresh">Refresh display</button>
 <button id="reboot">Restart virtual reader</button>
+<h2>Guest ROM</h2>
+<p><select id="romlist" aria-label="Candidate ROM files in --rom-dir">
+<option value="">Loading ROM list…</option></select></p>
+<p><button id="loadrom" disabled>Load ROM</button></p>
+<p id="romactive"><small>Active ROM: loading…</small></p>
+<p id="romerror" class="romerror" hidden></p>
 <p><strong>Wi-Fi radio is not emulated.</strong> Join a Network,
 Calibre Wireless and Create Hotspot cannot connect from this factory guest.
 Attempting network setup may stop its interface responding; use
@@ -126,28 +181,69 @@ Attempting network setup may stop its interface responding; use
 If the emulator process itself stopped, the same button starts a fresh guest.</p>
 <small>Local developer preview. Some features (Wi-Fi, hardware timing,
 real E-Ink waveform and other panel variants) remain unimplemented.
-One virtual device per server. No physical reader is attached.</small>
+One virtual device per server. No physical reader is attached. The ROM
+folder is read-only for this server; loading a ROM restarts the guest and
+the page only claims what the frame counter actually shows.</small>
 </div></main>
 <script>
 (function(){
 const img=document.getElementById('screen'),status=document.getElementById('status');
 const info=document.getElementById('info'),metrics=document.getElementById('metrics');
 const refresh=document.getElementById('refresh'),reboot=document.getElementById('reboot');
-let ready=false,lastFrame=-1,busy=false,ticks=0;
+const romList=document.getElementById('romlist'),loadRom=document.getElementById('loadrom');
+const romActive=document.getElementById('romactive'),romError=document.getElementById('romerror');
+let ready=false,lastFrame=-1,busy=false,ticks=0,romLoaded=false,romBusy=false;
 async function poll(){
  try{
    const response=await fetch('/api/state',{cache:'no-store'});
    const s=await response.json();
    if(!response.ok)throw new Error(s.error||'QEMU read failed');
    ready=Boolean(s.ready);
-   status.textContent=ready?'Ready — tap the display':'Booting factory firmware…';
+   status.textContent=ready?'Ready — tap the display':'Starting guest from the active ROM…';
    info.textContent='Display updates: '+s.frames+' · Nonwhite bytes: '+s.nonwhite+
      (s.sha256?' · Frame SHA-256: '+s.sha256.slice(0,12)+'…':'');
    if(s.frames!==lastFrame){
      lastFrame=s.frames;img.src='/screen.png?frame='+s.frames;
    }
+   if(s.rom)showRomActive(s.rom);
    if(++ticks%3===0)showTelemetry();
  }catch(e){ready=false;status.textContent='Emulator unavailable: '+e.message}
+}
+function showRomActive(rom){
+ const sha=rom.sha256?rom.sha256.slice(0,16)+'…':'not hashed';
+ romActive.textContent='Active ROM: '+rom.name+' · '+sha+' · '
+   +(rom.provenance_note||rom.provenance||'unknown');
+}
+async function loadRomList(){
+ try{
+   const response=await fetch('/api/roms',{cache:'no-store'});
+   const r=await response.json();
+   if(!response.ok)throw new Error(r.error||'ROM list read failed');
+   romList.innerHTML='';romList.disabled=false;
+   r.roms.forEach(function(item){
+     const o=document.createElement('option');
+     o.value=item.name;
+     o.textContent=item.name+' · '+(item.size/1048576).toFixed(1)+' MiB'
+       +(item.sha256?'':' · too large to hash')+(item.active?' · active':'');
+     if(item.active)o.selected=true;
+     romList.appendChild(o);
+   });
+   if(!r.roms.length){
+     const o=document.createElement('option');
+     o.value='';o.textContent='No ROM files in the ROM folder';
+     romList.appendChild(o);
+   }
+   if(r.truncated)romList.title='List capped at '+r.limit+' entries';
+   romLoaded=true;
+   loadRom.disabled=romBusy||!romList.value;
+ }catch(e){
+   // The page must stay usable when /api/roms is unavailable.
+   romLoaded=false;romList.innerHTML='';
+   const o=document.createElement('option');
+   o.value='';o.textContent='ROM list unavailable';
+   romList.appendChild(o);
+   romList.disabled=true;loadRom.disabled=true;
+ }
 }
 const METRIC_LABELS={'ybx-epd-busy-rise-edges':'BUSY up','ybx-epd-busy-fall-edges':'BUSY down',
  'ybx-epd-busy-high-ms':'BUSY ms','ybx-epd-frames':'frames','frame-sha256':'frame'};
@@ -191,7 +287,25 @@ reboot.addEventListener('click',async function(){
  }catch(e){status.textContent='Restart failed: '+e.message}
  finally{busy=false;reboot.disabled=false;poll()}
 });
-poll();setInterval(poll,1000);
+loadRom.addEventListener('click',async function(){
+ if(romBusy||!romList.value)return;
+ romBusy=true;loadRom.disabled=true;romError.hidden=true;
+ status.textContent='Loading ROM '+romList.value+'…';
+ try{
+   const response=await fetch('/api/rom',{method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({name:romList.value})});
+   const result=await response.json();
+   if(!response.ok)throw new Error(result.error||'ROM switch failed');
+   lastFrame=-1;ready=false;img.removeAttribute('src');
+   await loadRomList();
+   showRomActive({name:result.name,sha256:result.sha256,
+                  provenance_note:result.provenance_note});
+   status.textContent='ROM '+result.name+' is now active; the guest restarts below';
+ }catch(e){romError.textContent='Load ROM failed: '+e.message;romError.hidden=false}
+ finally{romBusy=false;loadRom.disabled=!romLoaded||!romList.value;poll()}
+});
+poll();loadRomList();setInterval(poll,1000);
 })();
 </script></body></html>"""
 
@@ -217,15 +331,22 @@ class FactoryX4Pro:
     QOM_PATH = "/machine/soc"
     TELEMETRY_COUNTERS = ("busy-rise-edges", "busy-fall-edges",
                           "busy-high-ms", "frames")
+    ROM_LIST_LIMIT = 64
+    ROM_MAX_HASH_BYTES = 64 * 1024 * 1024
+    ROM_FILENAME_IN_WORKDIR = "esp32s3_rev0_rom.bin"
 
     def __init__(self, args):
         self.temp = TemporaryDirectory(prefix="ybx-x4pro-browser-")
         self.workdir = Path(self.temp.name)
         t = self.workdir
         (t / "rom").mkdir()
-        shutil.copyfile(args.rom, t / "rom" / "esp32s3_rev0_rom.bin")
+        shutil.copyfile(args.rom, t / "rom" / self.ROM_FILENAME_IN_WORKDIR)
         shutil.copyfile(args.flash, t / "flash.bin")
         shutil.copyfile(args.sd_image, t / "sd.img")
+        self.rom_dir = Path(getattr(args, "rom_dir", None)
+                            or Path(args.rom).parent)
+        self.rom_name = Path(args.rom).name
+        self.rom_sha = sha256_file(Path(args.rom), self.ROM_MAX_HASH_BYTES)
         self.qemu_bin = args.qemu_bin
         self.lock = threading.RLock()
         self.tap_lock = threading.Lock()
@@ -283,16 +404,19 @@ class FactoryX4Pro:
                 self.process.kill()
                 self.process.wait()
 
-    def _relaunch(self):
-        """Replace a dead guest process inside the same server session."""
-        self._stop_process()
-        self.client.close()
-        self._launch()
+    def _reset_frame_cache(self):
         self.frame = -1
         self.sha = ""
         self.png = self.blank_png
         self.png_etag = '"blank"'
         self.png_mtime = time.time()
+
+    def _relaunch(self):
+        """Replace a dead guest process inside the same server session."""
+        self._stop_process()
+        self.client.close()
+        self._launch()
+        self._reset_frame_cache()
 
     def _get(self, property):
         result = self.qmp("qom-get",{"path":self.QOM_PATH,
@@ -323,6 +447,7 @@ class FactoryX4Pro:
                     "nonwhite":self.nonwhite,
                     "ready":guest_ready_for_touch(frames),
                     "sha256":self.sha,"factory_guest":True,
+                    "rom":self.rom_info(),
                     "physical_device":False}
 
     def telemetry(self):
@@ -359,6 +484,143 @@ class FactoryX4Pro:
                     "available": False, "value": None,
                     "error": "no rendered frame has been hashed yet"}
             return counters
+
+    @staticmethod
+    def provenance_of(sha):
+        if sha is None:
+            return "unhashed"
+        return KNOWN_FACTORY_IMAGES.get(sha, "custom")
+
+    def rom_info(self):
+        provenance = self.provenance_of(self.rom_sha)
+        return {"name": self.rom_name,
+                "sha256": self.rom_sha,
+                "provenance": provenance,
+                "provenance_note": PROVENANCE_LABELS[provenance],
+                "known_factory_image": provenance.startswith("factory-")}
+
+    def roms(self):
+        """List candidate ROM files in rom_dir; the server never writes there.
+
+        Regular files only (symlinks are skipped, never followed), sorted by
+        name, capped at ROM_LIST_LIMIT entries and ROM_MAX_HASH_BYTES per
+        hashed file. An unhashed file is reported with sha256=null and an
+        error note instead of a fabricated hash.
+        """
+        candidates = []
+        with os.scandir(self.rom_dir) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        candidates.append(entry)
+                except OSError:
+                    continue  # dangling directory entry; not a usable file
+        candidates.sort(key=lambda entry: entry.name)
+        truncated = len(candidates) > self.ROM_LIST_LIMIT
+        roms = []
+        for entry in candidates[:self.ROM_LIST_LIMIT]:
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            item = {"name": entry.name, "size": info.st_size,
+                    "sha256": None,
+                    "active": entry.name == self.rom_name}
+            try:
+                item["sha256"] = sha256_file(Path(entry.path),
+                                             self.ROM_MAX_HASH_BYTES)
+            except OSError:
+                item["error"] = "file could not be read for hashing"
+            if item["sha256"] is None and "error" not in item:
+                item["error"] = (f"larger than {self.ROM_MAX_HASH_BYTES} "
+                                 "bytes; not hashed")
+            provenance = self.provenance_of(item["sha256"])
+            item["provenance"] = provenance
+            item["provenance_note"] = PROVENANCE_LABELS[provenance]
+            roms.append(item)
+        return {"roms": roms, "active": self.rom_name,
+                "truncated": truncated,
+                "limit": self.ROM_LIST_LIMIT,
+                "max_hash_bytes": self.ROM_MAX_HASH_BYTES}
+
+    def _resolve_rom_target(self, name):
+        """Map a client-supplied name to a regular file inside rom_dir only."""
+        if (not isinstance(name, str) or not name or name in (".", "..")
+                or "\x00" in name or "/" in name or "\\" in name
+                or os.sep in name or (os.altsep and os.altsep in name)):
+            raise BadRequestError("ROM name must be a plain file name "
+                                  "inside --rom-dir")
+        candidate = self.rom_dir / name
+        try:
+            info = os.lstat(candidate)
+        except OSError:
+            raise RomNotFoundError(f"Unknown ROM: {name}") from None
+        if not stat.S_ISREG(info.st_mode):
+            # Any symlink is rejected, so none can point outside rom_dir.
+            raise BadRequestError(f"{name} is not a regular file in --rom-dir")
+        resolved = candidate.resolve()
+        if resolved.parent != self.rom_dir.resolve():
+            raise BadRequestError(f"{name} resolves outside --rom-dir")
+        return resolved
+
+    def _clear_touch_state_quietly(self):
+        """Best-effort GT911 zeroing before the guest process is replaced.
+
+        The fresh process starts with cleared synthetic touch state anyway; a
+        dead QMP transport here must not abort an already validated swap.
+        """
+        if self.process.poll() is not None:
+            return
+        try:
+            for prop in ("state", "x", "y"):
+                self._set_touch(prop, 0)
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+    def switch_rom(self, name):
+        """Load the named ROM and restart the guest like /api/reboot does.
+
+        Success means the new QEMU process came up and accepted QMP; it is
+        NOT a claim that the guest booted or painted a frame. /api/state
+        frames remain the only boot truth.
+        """
+        target = self._resolve_rom_target(name)
+        try:
+            size = target.stat().st_size
+        except OSError:
+            raise RomNotFoundError(f"ROM vanished while loading: {name}") from None
+        if size > self.ROM_MAX_HASH_BYTES:
+            raise BadRequestError(f"ROM {name} is larger than "
+                                  f"{self.ROM_MAX_HASH_BYTES} bytes; refusing "
+                                  "to load an unverified image")
+        try:
+            sha = sha256_file(target, self.ROM_MAX_HASH_BYTES)
+        except OSError:
+            raise RomNotFoundError(f"ROM vanished while loading: {name}") from None
+        if sha is None:
+            raise BadRequestError(f"ROM {name} grew past the hash cap while "
+                                  "loading; retry")
+        self._begin_action()
+        try:
+            with self.lock:
+                self._clear_touch_state_quietly()
+                self._stop_process()
+                if self.client is not None:
+                    self.client.close()
+                staged = (self.workdir / "rom"
+                          / (self.ROM_FILENAME_IN_WORKDIR + ".new"))
+                shutil.copyfile(target, staged)
+                os.replace(staged,
+                           self.workdir / "rom" / self.ROM_FILENAME_IN_WORKDIR)
+                self.rom_name = name
+                self.rom_sha = sha
+                self._reset_frame_cache()
+                self._launch()
+        finally:
+            self._end_action()
+        provenance = self.provenance_of(sha)
+        return {"name": name, "sha256": sha, "provenance": provenance,
+                "provenance_note": PROVENANCE_LABELS[provenance]}
 
     def _begin_action(self):
         """Serialize touches and resets behind a bounded queue.
@@ -441,11 +703,7 @@ class FactoryX4Pro:
                     return
                 if "return" not in result:
                     raise RuntimeError(str(result.get("error", result)))
-                self.frame = -1
-                self.sha = ""
-                self.png = self.blank_png
-                self.png_etag = '"blank"'
-                self.png_mtime = time.time()
+                self._reset_frame_cache()
         finally:
             self._end_action()
 
@@ -519,6 +777,8 @@ def make_handler(emu):
                     self.response_json(200,emu.state())
                 elif path == "/api/telemetry":
                     self.response_json(200,emu.telemetry())
+                elif path == "/api/roms":
+                    self.response_json(200,emu.roms())
                 elif path == "/screen.png":
                     self.serve_screen()
                 else:
@@ -527,6 +787,39 @@ def make_handler(emu):
                 self.guest_failure(exc)
             except Exception as exc:
                 self.response_json(503,{"error":str(exc)})
+
+        def handle_rom_switch(self):
+            try:
+                try:
+                    if self.headers.get("Content-Type","").split(";",1)[0]!="application/json":
+                        raise BadRequestError("Use application/json")
+                    try:
+                        size=int(self.headers.get("Content-Length","0"))
+                    except ValueError:
+                        raise BadRequestError("Invalid Content-Length")
+                    if not 0 < size <= 256:
+                        raise BadRequestError("Invalid payload size")
+                    payload=json.loads(self.rfile.read(size))
+                except ValueError as exc:
+                    raise BadRequestError(str(exc)) from exc
+                if not isinstance(payload,dict):
+                    raise BadRequestError("ROM payload must be a JSON object")
+                name=payload.get("name")
+                if not isinstance(name,str):
+                    raise BadRequestError("name must be a string")
+                result=emu.switch_rom(name)
+            except BadRequestError as exc:
+                self.response_json(exc.http_status,
+                                   {"error":str(exc),"type":exc.kind})
+                return
+            except GuestError as exc:
+                self.guest_failure(exc)
+                return
+            except (RuntimeError,OSError) as exc:
+                self.response_json(503,{"error":str(exc)})
+                return
+            self.response_json(200,{"accepted":True,"action":"rom-switch",
+                                    **result})
 
         def do_POST(self):
             if self.path=="/api/reboot":
@@ -537,6 +830,9 @@ def make_handler(emu):
                     self.guest_failure(exc)
                 except (ValueError,RuntimeError,OSError) as exc:
                     self.response_json(503,{"error":str(exc)})
+                return
+            if self.path=="/api/rom":
+                self.handle_rom_switch()
                 return
             if self.path!="/api/tap":
                 self.response_json(404,{"error":"Not found"})
@@ -578,11 +874,18 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for flag in ("qemu-bin","rom","flash","sd-image"):
         p.add_argument("--"+flag,type=Path,required=True)
+    p.add_argument("--rom-dir",type=Path,
+                   help="read-only folder of candidate ROM files; "
+                        "defaults to the directory of --rom")
     p.add_argument("--host",default="127.0.0.1")
     p.add_argument("--port",type=int,default=8784)
     args=p.parse_args()
     for attr in ("qemu_bin","rom","flash","sd_image"):
         setattr(args,attr,getattr(args,attr).resolve(strict=True))
+    rom_dir=(args.rom_dir or args.rom.parent).resolve()
+    if not rom_dir.is_dir():
+        p.error(f"--rom-dir {rom_dir} is not an existing directory")
+    args.rom_dir=rom_dir
     emu=FactoryX4Pro(args)
     try:
         server=ThreadingHTTPServer((args.host,args.port),make_handler(emu))
