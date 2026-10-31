@@ -223,3 +223,28 @@ guarded at serve_x4pro_browser.py:608-:609 and covered by
    operator who replaces a seeded file with his own content under the SAME
    name gets provenance `custom` (SHA mismatch), never `factory-rom` — the
    hash, not the name, decides.
+
+---
+
+## Orchestrator note — live verification (2026-10-31)
+
+Checked against the running instance (bridge at 192.168.10.239:8784, ROM folder
+`~/Projects/YBX/artifacts/ybx-esp32-system-emulation-20261029/roms`, four
+candidates: the factory blob, two other ESP32-S3 images and one ESP32-C3 image):
+
+| Check | Result |
+|---|---|
+| `GET /api/roms` | 4 candidates with size and SHA-256; the factory blob marked `active` with provenance `factory-rom`, the others `custom` with the honest note |
+| `POST /api/rom` → `esp32s3-rom-complete.bin` | accepted with the new SHA; guest restarted |
+| guest after the switch | 0 frames for 48 s — the image does not boot this S3 machine |
+| `POST /api/rom` → `s3-full-rom-generator-test.bin` | accepted; guest booted to the Home frame SHA `e79c2ad5…` (round trip) |
+| `POST /api/rom` with `../qa-20261029/…` | 400 "ROM name must be a plain file name inside --rom-dir" |
+| `POST /api/rom` with `/etc/passwd` | 400, same message |
+| `POST /api/rom` with `nope.bin` | 404 |
+
+The live run exposed one gap in this lane's UX: a ROM that never paints a frame
+was indistinguishable from a slow boot. The orchestrator added `guest_booted`,
+`boot_wait_seconds` and `boot_failed` to `/api/state` (45 s threshold) and an
+explicit "the guest did not boot from this ROM" line in the page. Verified live:
+`frames 0, booted False, failed True` after 48 s on the non-booting image, and
+`boot_failed: false` again after switching back.
