@@ -1,0 +1,241 @@
+{
+  "qemu_binary": "/qemu/build-ybx/qemu-system-xtensa",
+  "machine": "esp32s3,ybx-x4pro-spi2=on,ybx-x4pro-epd=on",
+  "phases": {
+    "default": {
+      "idle": {
+        "value": [
+          0,
+          0
+        ],
+        "expected": [
+          0,
+          0
+        ],
+        "pass": true
+      },
+      "power_asserts_busy": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "power_release_ms_default": {
+        "value": 350,
+        "expected": 350,
+        "pass": true
+      },
+      "power_attributed": {
+        "value": 350,
+        "expected": 350,
+        "pass": true
+      },
+      "waveform_still_zero": {
+        "value": 0,
+        "expected": 0,
+        "pass": true
+      },
+      "paint_frames": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "waveform_release_ms_default": {
+        "value": 350,
+        "expected": 350,
+        "pass": true
+      },
+      "waveform_attributed": {
+        "value": 350,
+        "expected": 350,
+        "pass": true
+      },
+      "deep_sleep_flag": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "sleep_entries": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "post_sleep_frames_unchanged": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "post_sleep_no_busy_edge": {
+        "value": 3,
+        "expected": 3,
+        "pass": true
+      },
+      "post_sleep_bytes_rejected": {
+        "value": true,
+        "expected": true,
+        "pass": true
+      },
+      "sw_reset_keeps_sleep": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "wake_clears_sleep": {
+        "value": 0,
+        "expected": 0,
+        "pass": true
+      },
+      "default_reset_still_quiet": {
+        "value": 0,
+        "expected": 0,
+        "pass": true
+      },
+      "wake_paint_frames": {
+        "value": 2,
+        "expected": 2,
+        "pass": true
+      },
+      "categories_partition_pooled": {
+        "value": true,
+        "expected": true,
+        "pass": true
+      },
+      "edges_balanced": {
+        "value": 4,
+        "expected": 4,
+        "pass": true
+      },
+      "qtest_commands": 1176,
+      "qemu_stderr_tail": "273162] clock_step 1000000\n[S +0.273168] OK 1053000000\n[R +0.273364] clock_step 1000000\n[S +0.273369] OK 1054000000\n[R +0.273552] clock_step 1000000\n[S +0.273558] OK 1055000000\n[R +0.273763] clock_step 1000000\n[S +0.273769] OK 1056000000\n[R +0.273974] clock_step 1000000\n[S +0.273980] OK 1057000000\n[R +0.274179] clock_step 1000000\n[S +0.274184] OK 1058000000\n[R +0.274382] clock_step 1000000\n[S +0.274387] OK 1059000000\n[R +0.274578] clock_step 1000000\n[S +0.274585] OK 1060000000\n[I +0.275830] CLOSED\nqemu-system-xtensa: GLib: g_timer_elapsed: assertion 'timer != NULL' failed\n[I +0.000000] CLOSED\n"
+    },
+    "windows": {
+      "power_window_applied": {
+        "value": 40,
+        "expected": 40,
+        "pass": true
+      },
+      "waveform_window_applied": {
+        "value": 350,
+        "expected": 350,
+        "pass": true
+      },
+      "reset_window_applied": {
+        "value": 10,
+        "expected": 10,
+        "pass": true
+      },
+      "startup_release_trails_busy": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "startup_sleep_idle": {
+        "value": 0,
+        "expected": 0,
+        "pass": true
+      },
+      "power_asserts_busy": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "power_release_ms_windows": {
+        "value": 40,
+        "expected": 40,
+        "pass": true
+      },
+      "power_attributed": {
+        "value": 40,
+        "expected": 40,
+        "pass": true
+      },
+      "waveform_still_zero": {
+        "value": 0,
+        "expected": 0,
+        "pass": true
+      },
+      "paint_frames": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "waveform_release_ms_windows": {
+        "value": 350,
+        "expected": 350,
+        "pass": true
+      },
+      "waveform_attributed": {
+        "value": 350,
+        "expected": 350,
+        "pass": true
+      },
+      "deep_sleep_flag": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "sleep_entries": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "post_sleep_frames_unchanged": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "post_sleep_no_busy_edge": {
+        "value": 3,
+        "expected": 3,
+        "pass": true
+      },
+      "post_sleep_bytes_rejected": {
+        "value": true,
+        "expected": true,
+        "pass": true
+      },
+      "sw_reset_keeps_sleep": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "wake_clears_sleep": {
+        "value": 0,
+        "expected": 0,
+        "pass": true
+      },
+      "reset_trails_busy": {
+        "value": 1,
+        "expected": 1,
+        "pass": true
+      },
+      "reset_busy_release_ms": {
+        "value": 10,
+        "expected": 10,
+        "pass": true
+      },
+      "reset_attributed": {
+        "value": 10,
+        "expected": 10,
+        "pass": true
+      },
+      "wake_paint_frames": {
+        "value": 2,
+        "expected": 2,
+        "pass": true
+      },
+      "categories_partition_pooled": {
+        "value": true,
+        "expected": true,
+        "pass": true
+      },
+      "edges_balanced": {
+        "value": 5,
+        "expected": 5,
+        "pass": true
+      },
+      "qtest_commands": 876,
+      "qemu_stderr_tail": "0\n[R +0.177743] clock_step 1000000\n[S +0.177748] OK 753000000\n[R +0.177949] clock_step 1000000\n[S +0.177954] OK 754000000\n[R +0.178140] clock_step 1000000\n[S +0.178145] OK 755000000\n[R +0.178348] clock_step 1000000\n[S +0.178354] OK 756000000\n[R +0.178553] clock_step 1000000\n[S +0.178559] OK 757000000\n[R +0.178751] clock_step 1000000\n[S +0.178756] OK 758000000\n[R +0.178954] clock_step 1000000\n[S +0.178959] OK 759000000\n[R +0.179146] clock_step 1000000\n[S +0.179151] OK 760000000\n[I +0.180371] CLOSED\nqemu-system-xtensa: GLib: g_timer_elapsed: assertion 'timer != NULL' failed\n[I +0.000000] CLOSED\n"
+    }
+  },
+  "failed": []
+}
