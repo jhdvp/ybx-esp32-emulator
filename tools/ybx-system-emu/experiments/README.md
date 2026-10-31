@@ -558,3 +558,13 @@ still boot and paint, the waveform probe passes all checks, and the radio stub
 answers its register inventory when switched on. Enabling the stub changes
 stock CrossPoint's early boot path without unblocking it, so it stays an
 opt-in instrument; the live emulator remains on `7e554ba9…`.
+
+## 0075 — final integration: 26-patch chain, live kernel, status snapshot
+
+`STATUS.md` at the repository root is the consolidated snapshot: the live
+kernel (`f65db0a7…`, chain 0042 + 0037 + 0043 + 0051 + 0068 + 0069 + 0071),
+every agent batch with its verdict, every orchestrator fix, and the honest
+open items. `check_qemu_patch_composition.py` now audits the full 26-patch
+chain and pins the live binary; a clean-room build of that chain reproduces
+`f65db0a7…` byte-identically, and the final boot matrix on that kernel reports
+5 painted images, 1 that paints nothing (inkMOD), 1 refused and 0 crashes.

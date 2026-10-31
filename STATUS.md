@@ -14,7 +14,7 @@ reports; each row links to the evidence.
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
 | Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
 | Host tests | 672 tests, 10 skipped |
-| Clean-room build | reproduces the live binary byte-identically from base `febae18` |
+| Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
 
