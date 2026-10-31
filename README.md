@@ -58,7 +58,7 @@
 | Power / sleep / waveform timing | 🟢 **Modelled** | Host lifecycle models and telemetry, not physical E-Ink fidelity; split power/waveform BUSY windows, a real deep-sleep state and BUSY around reset are in the running kernel ([0069](tools/ybx-system-emu/experiments/0069-epd-waveform-apply-20261031.md)) |
 | X3 / X4 / other panels | 🟡 **Early bring-up** | CPU milestones exist; full interactive device coverage is not claimed |
 
-**Evidence:** with the companion CrossPoint firmware and the local firmware artifacts present: 826 tests (816 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
+**Evidence:** with the companion CrossPoint firmware and the local firmware artifacts present: 832 tests (822 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
 
 ## How it works
 

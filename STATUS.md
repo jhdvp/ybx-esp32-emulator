@@ -13,7 +13,7 @@ reports; each row links to the evidence.
 | Live binary SHA-256 | `f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236` |
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
 | Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
-| Host tests | 826 tests, 10 skipped (with the companion firmware artifacts present) |
+| Host tests | 832 tests, 10 skipped (with the companion firmware artifacts present) |
 | Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
@@ -65,6 +65,14 @@ error).
 | wifi-radio-stage1 | **0071**: opt-in radio register stub |
 | repro-build-e2e | **0072**: clean-room build executed end to end |
 | boot-matrix | **0073**: measured boot table tool |
+
+### Batch 6 — 2026-11-01, in flight
+| Lane | Result |
+|---|---|
+| library-browse2 (re-queued from batch 5) | **0092**: FAT16 test-card builder whose output is verified by parsing it back, plus browse-gate thresholds pinned to the sector counts 0084 measured. Arrived as `pytest`-style functions invisible to the repo's unittest gate — ported to `TestCase`, pristine check made skippable, BPB geometry test added |
+| inkmod-cause2 | running — sleep/IPC stop point turned into a ranked, falsifiable hypothesis list |
+| wifi-narrow | running — builds 0081's narrowing patch in a private tree, re-runs the boot matrix on both kernels |
+| nav-acceptance, panel-support | queued behind the running lanes |
 
 ### Batch 5 — twelve lanes (2026-10-31 → 11-01)
 | Lane | Result |
