@@ -5,12 +5,14 @@ No firmware writes, invented pixels or direct semaphore injection.
 Docker port MUST bind localhost on the host unless separately protected.
 """
 import argparse
+import email.utils
 import hashlib
 import json
 import shutil
 import subprocess
 import threading
 import time
+from datetime import timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,6 +21,61 @@ from epd_frame_io import save_mono_png, ssd1677_landscape_to_portrait
 from probe_x4pro_touch_injection_qtest import qmp_connect
 
 W, H = 480, 800
+
+
+class BadRequestError(ValueError):
+    """Client sent something the bridge cannot act on. Maps to HTTP 400."""
+    kind = "bad-request"
+
+
+class GuestError(RuntimeError):
+    """QEMU guest interaction failed in a way the client can classify."""
+    kind = "guest-error"
+    http_status = 503
+    retry_after = None
+
+
+class GuestBusyError(GuestError):
+    kind = "guest-busy"
+    retry_after = "1"
+
+
+class TapQueueFullError(GuestBusyError):
+    http_status = 429
+
+
+class GuestMissingError(GuestError):
+    kind = "guest-missing"
+
+
+def etag_matches(header_value, etag):
+    """RFC 9110 If-None-Match comparison: '*', lists, weak (W/) prefixes."""
+    if header_value is None:
+        return False
+    header_value = header_value.strip()
+    if header_value == "*":
+        return True
+
+    def strip_weak(value):
+        value = value.strip()
+        return value[2:] if value.startswith("W/") else value
+
+    target = strip_weak(etag)
+    return any(strip_weak(item) == target for item in header_value.split(","))
+
+
+def not_modified_since(header_value, mtime):
+    """RFC 9110 If-Modified-Since comparison at one-second resolution."""
+    try:
+        parsed = email.utils.parsedate_to_datetime(header_value)
+    except (TypeError, ValueError):
+        return False
+    if parsed is None:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(mtime) <= int(parsed.timestamp())
+
 
 def guest_ready_for_touch(frames):
     """Allow input once the guest has completed its initial panel refreshes.
@@ -59,6 +116,7 @@ not an HTML mockup. Tap directly on the reader screen to send a
 150 ms GT911 touch to the virtual device.</p>
 <div class="status" id="status">Connecting to QEMU…</div>
 <p id="info">The original firmware initializes the panel before the home screen appears.</p>
+<p id="metrics"><small>BUSY telemetry: loading…</small></p>
 <button id="refresh">Refresh display</button>
 <button id="reboot">Restart virtual reader</button>
 <p><strong>Wi-Fi radio is not emulated.</strong> Join a Network,
@@ -73,8 +131,9 @@ One virtual device per server. No physical reader is attached.</small>
 <script>
 (function(){
 const img=document.getElementById('screen'),status=document.getElementById('status');
-const info=document.getElementById('info'),refresh=document.getElementById('refresh'),reboot=document.getElementById('reboot');
-let ready=false,lastFrame=-1,busy=false;
+const info=document.getElementById('info'),metrics=document.getElementById('metrics');
+const refresh=document.getElementById('refresh'),reboot=document.getElementById('reboot');
+let ready=false,lastFrame=-1,busy=false,ticks=0;
 async function poll(){
  try{
    const response=await fetch('/api/state',{cache:'no-store'});
@@ -85,9 +144,25 @@ async function poll(){
    info.textContent='Display updates: '+s.frames+' · Nonwhite bytes: '+s.nonwhite+
      (s.sha256?' · Frame SHA-256: '+s.sha256.slice(0,12)+'…':'');
    if(s.frames!==lastFrame){
-     lastFrame=s.frames;img.src='/screen.png?frame='+s.frames+'&t='+Date.now();
+     lastFrame=s.frames;img.src='/screen.png?frame='+s.frames;
    }
+   if(++ticks%3===0)showTelemetry();
  }catch(e){ready=false;status.textContent='Emulator unavailable: '+e.message}
+}
+const METRIC_LABELS={'ybx-epd-busy-rise-edges':'BUSY up','ybx-epd-busy-fall-edges':'BUSY down',
+ 'ybx-epd-busy-high-ms':'BUSY ms','ybx-epd-frames':'frames','frame-sha256':'frame'};
+async function showTelemetry(){
+ try{
+   const response=await fetch('/api/telemetry',{cache:'no-store'});
+   const t=await response.json();
+   if(!response.ok)throw new Error(t.error||'telemetry read failed');
+   const parts=[];
+   for(const key in METRIC_LABELS){
+     const c=t[key];
+     parts.push(METRIC_LABELS[key]+': '+((c&&c.available)?c.value:'n/a'));
+   }
+   metrics.textContent=parts.join(' · ');
+ }catch(e){metrics.textContent='BUSY telemetry: unavailable ('+e.message+')'}
 }
 img.addEventListener('click',async function(ev){
  if(!ready||busy)return;
@@ -124,20 +199,24 @@ poll();setInterval(poll,1000);
 def check_touch(data):
     """Validate actual X4 Pro 480x800 raw GT911 coordinates."""
     if not isinstance(data, dict):
-        raise ValueError("Touch payload must be a JSON object")
+        raise BadRequestError("Touch payload must be a JSON object")
     x, y = data.get("x"), data.get("y")
     ms = data.get("duration_ms", 150)
     if type(x) is not int or type(y) is not int:
-        raise ValueError("x and y must be integers")
+        raise BadRequestError("x and y must be integers")
     if not (0 <= x < W and 0 <= y < H):
-        raise ValueError("Touch outside X4 Pro panel")
+        raise BadRequestError("Touch outside X4 Pro panel")
     if type(ms) is not int or not (60 <= ms <= 500):
-        raise ValueError("duration_ms must be 60..500")
+        raise BadRequestError("duration_ms must be 60..500")
     return x, y, ms
 
 
 class FactoryX4Pro:
     tap_wait_seconds = 2.0
+    tap_queue_depth = 4
+    QOM_PATH = "/machine/soc"
+    TELEMETRY_COUNTERS = ("busy-rise-edges", "busy-fall-edges",
+                          "busy-high-ms", "frames")
 
     def __init__(self, args):
         self.temp = TemporaryDirectory(prefix="ybx-x4pro-browser-")
@@ -150,6 +229,7 @@ class FactoryX4Pro:
         self.qemu_bin = args.qemu_bin
         self.lock = threading.RLock()
         self.tap_lock = threading.Lock()
+        self.tap_slots = threading.BoundedSemaphore(self.tap_queue_depth)
         self.process = None
         self.client = None
         self.frame = -1
@@ -159,6 +239,8 @@ class FactoryX4Pro:
         save_mono_png(self.png_file, bytes([255]) * (W*H//8), W, H)
         self.blank_png = self.png_file.read_bytes()
         self.png = self.blank_png
+        self.png_etag = '"blank"'
+        self.png_mtime = time.time()
         self.qemu_log = (t/"qemu.log").open("w")
         try:
             self._launch()
@@ -209,9 +291,11 @@ class FactoryX4Pro:
         self.frame = -1
         self.sha = ""
         self.png = self.blank_png
+        self.png_etag = '"blank"'
+        self.png_mtime = time.time()
 
     def _get(self, property):
-        result = self.qmp("qom-get",{"path":"/machine/soc",
+        result = self.qmp("qom-get",{"path":self.QOM_PATH,
                                       "property":"ybx-epd-"+property})
         if "return" not in result:
             raise RuntimeError(str(result.get("error",result)))
@@ -220,8 +304,8 @@ class FactoryX4Pro:
     def state(self):
         with self.lock:
             if self.process.poll() is not None:
-                raise RuntimeError("QEMU process terminated; "
-                                   "use Restart virtual reader")
+                raise GuestMissingError("QEMU process terminated; "
+                                        "use Restart virtual reader")
             frames = self._get("frames")
             self.nonwhite = self._get("nonwhite")
             if frames != self.frame and frames:
@@ -232,24 +316,80 @@ class FactoryX4Pro:
                 save_mono_png(self.png_file, portrait, W, H)
                 self.png = self.png_file.read_bytes()
                 self.sha = hashlib.sha256(raw).hexdigest()
+                self.png_etag = f'"f{frames}-{self.sha[:16]}"'
+                self.png_mtime = time.time()
             self.frame = frames
-            return {"frames":frames,"nonwhite":self.nonwhite,
+            return {"frames":frames,"monotonic_ms":int(time.monotonic()*1000),
+                    "nonwhite":self.nonwhite,
                     "ready":guest_ready_for_touch(frames),
                     "sha256":self.sha,"factory_guest":True,
                     "physical_device":False}
 
+    def telemetry(self):
+        """Read-only EPD BUSY/frame counters from QOM; never writes anything.
+
+        A property the running QEMU binary does not expose is reported as
+        unavailable with the QMP error text — never as a fabricated zero.
+        """
+        with self.lock:
+            if self.process.poll() is not None:
+                raise GuestMissingError("QEMU process terminated; "
+                                        "use Restart virtual reader")
+            counters = {}
+            for short in self.TELEMETRY_COUNTERS:
+                name = "ybx-epd-" + short
+                try:
+                    value = self._get(short)
+                except (OSError, ValueError) as exc:
+                    raise GuestMissingError(
+                        f"QMP transport failed while reading {name}: {exc}"
+                    ) from exc
+                except RuntimeError as exc:
+                    counters[name] = {"available": False, "value": None,
+                                      "error": str(exc)}
+                    continue
+                counters[name] = {"available": True, "value": value,
+                                  "source": f"qom:{self.QOM_PATH}/{name}"}
+            if self.sha:
+                counters["frame-sha256"] = {
+                    "available": True, "value": self.sha,
+                    "source": "server:sha256(ssd1677-visible-ram)"}
+            else:
+                counters["frame-sha256"] = {
+                    "available": False, "value": None,
+                    "error": "no rendered frame has been hashed yet"}
+            return counters
+
     def _begin_action(self):
-        """Serialize touches and resets; a short wait lets fast repeated
-        taps queue instead of being rejected."""
-        if not self.tap_lock.acquire(timeout=self.tap_wait_seconds):
-            raise RuntimeError("Guest busy with another touch; retry shortly")
+        """Serialize touches and resets behind a bounded queue.
+
+        At most tap_queue_depth clients may wait for the guest at once; the
+        rest are refused immediately instead of piling up threads. A short
+        wait lets fast repeated taps queue instead of being rejected.
+        """
+        if not self.tap_slots.acquire(blocking=False):
+            raise TapQueueFullError(
+                f"Tap queue is full ({self.tap_queue_depth} waiting); "
+                "retry shortly")
+        try:
+            if not self.tap_lock.acquire(timeout=self.tap_wait_seconds):
+                raise GuestBusyError("Guest busy with another touch; "
+                                     "retry shortly")
+        except BaseException:
+            self.tap_slots.release()
+            raise
+
+    def _end_action(self):
+        self.tap_lock.release()
+        self.tap_slots.release()
 
     def tap(self, x, y, duration_ms):
         self._begin_action()
         pressed=False
         try:
             if not self.state()["ready"]:
-                raise RuntimeError("Guest display has not completed its initial refreshes")
+                raise GuestBusyError("Guest display has not completed its "
+                                     "initial refreshes")
             with self.lock:
                 for prop, value in (("x",x),("y",y),("state",1)):
                     self._set_touch(prop, value)
@@ -262,7 +402,7 @@ class FactoryX4Pro:
                     with self.lock:
                         self._set_touch("state", 0)
             finally:
-                self.tap_lock.release()
+                self._end_action()
 
     def _set_touch(self, prop, value):
         result = self.qmp("qom-set", {"path": "/machine/soc",
@@ -304,8 +444,10 @@ class FactoryX4Pro:
                 self.frame = -1
                 self.sha = ""
                 self.png = self.blank_png
+                self.png_etag = '"blank"'
+                self.png_mtime = time.time()
         finally:
-            self.tap_lock.release()
+            self._end_action()
 
     def close(self):
         if self.client is not None:
@@ -317,17 +459,56 @@ class FactoryX4Pro:
 
 def make_handler(emu):
     class Handler(BaseHTTPRequestHandler):
-        def reply(self, code, body, kind, cache=False):
+        def reply(self, code, body, kind, cache=False, extra=None):
             self.send_response(code)
-            self.send_header("Content-Type",kind)
-            self.send_header("Content-Length",str(len(body)))
-            self.send_header("Cache-Control","no-store" if not cache else "private, max-age=1")
+            if kind:
+                self.send_header("Content-Type",kind)
+            if body is not None:
+                self.send_header("Content-Length",str(len(body)))
+            self.send_header("Cache-Control",
+                             "private, max-age=0, must-revalidate" if cache
+                             else "no-store")
             self.send_header("X-Content-Type-Options","nosniff")
+            for name,value in (extra or {}).items():
+                self.send_header(name,value)
             self.end_headers()
-            self.wfile.write(body)
+            if body is not None:
+                self.wfile.write(body)
 
-        def response_json(self, code, payload):
-            self.reply(code,json.dumps(payload).encode(),"application/json; charset=utf-8")
+        def response_json(self, code, payload, extra=None):
+            self.reply(code,json.dumps(payload).encode(),
+                       "application/json; charset=utf-8",extra=extra)
+
+        def guest_failure(self, exc):
+            code = getattr(exc,"http_status",503)
+            payload = {"error":str(exc),
+                       "type":getattr(exc,"kind","guest-error")}
+            extra = None
+            retry = getattr(exc,"retry_after",None)
+            if retry:
+                extra = {"Retry-After":retry}
+            self.response_json(code,payload,extra=extra)
+
+        def serve_screen(self):
+            emu.state()
+            etag = getattr(emu,"png_etag",None)
+            mtime = getattr(emu,"png_mtime",None)
+            validators = {}
+            if etag:
+                validators["ETag"] = etag
+            if mtime:
+                validators["Last-Modified"] = email.utils.formatdate(mtime,usegmt=True)
+            if_none_match = self.headers.get("If-None-Match")
+            if_modified = self.headers.get("If-Modified-Since")
+            fresh = False
+            if etag and if_none_match is not None:
+                fresh = etag_matches(if_none_match,etag)
+            elif not etag and mtime and if_modified is not None:
+                fresh = not_modified_since(if_modified,mtime)
+            if fresh:
+                self.reply(304,None,None,cache=True,extra=validators)
+                return
+            self.reply(200,emu.png,"image/png",cache=True,extra=validators)
 
         def do_GET(self):
             try:
@@ -336,11 +517,14 @@ def make_handler(emu):
                     self.reply(200,PAGE.encode(),"text/html; charset=utf-8")
                 elif path == "/api/state":
                     self.response_json(200,emu.state())
+                elif path == "/api/telemetry":
+                    self.response_json(200,emu.telemetry())
                 elif path == "/screen.png":
-                    emu.state()
-                    self.reply(200,emu.png,"image/png")
+                    self.serve_screen()
                 else:
                     self.response_json(404,{"error":"Not found"})
+            except GuestError as exc:
+                self.guest_failure(exc)
             except Exception as exc:
                 self.response_json(503,{"error":str(exc)})
 
@@ -349,6 +533,8 @@ def make_handler(emu):
                 try:
                     emu.reboot()
                     self.response_json(200,{"accepted":True,"action":"QEMU system_reset"})
+                except GuestError as exc:
+                    self.guest_failure(exc)
                 except (ValueError,RuntimeError,OSError) as exc:
                     self.response_json(503,{"error":str(exc)})
                 return
@@ -357,23 +543,26 @@ def make_handler(emu):
                 return
             try:
                 if self.headers.get("Content-Type","").split(";",1)[0]!="application/json":
-                    raise ValueError("Use application/json")
+                    raise BadRequestError("Use application/json")
                 try:
                     size=int(self.headers.get("Content-Length","0"))
                 except ValueError:
-                    raise ValueError("Invalid Content-Length")
+                    raise BadRequestError("Invalid Content-Length")
                 if not 0 < size <= 160:
-                    raise ValueError("Invalid payload size")
+                    raise BadRequestError("Invalid payload size")
                 try:
                     payload=json.loads(self.rfile.read(size))
                 except ValueError:
-                    raise ValueError("Invalid JSON payload")
+                    raise BadRequestError("Invalid JSON payload")
                 x,y,ms=check_touch(payload)
             except ValueError as exc:
-                self.response_json(400,{"error":str(exc)})
+                self.response_json(400,{"error":str(exc),"type":"bad-request"})
                 return
             try:
                 emu.tap(x,y,ms)
+            except GuestError as exc:
+                self.guest_failure(exc)
+                return
             except (RuntimeError,OSError) as exc:
                 self.response_json(503,{"error":str(exc)})
                 return
