@@ -24,14 +24,14 @@
 
 <p align="center"><img src="assets/gallery.png" width="100%" alt="Home, More, YBX Settings and System Settings captured from original X4 Pro firmware inside QEMU"></p>
 
-<p align="center"><sub>All four images come from real, unmodified X4 Pro firmware running inside QEMU. The screenshots are derived from the emulated SSD1677 display RAM — not HTML recreations, static UI mockups or a physical reader.</sub></p>
+<p align="center"><sub>The first four images come from the real, unmodified YBX X4 Pro firmware; the fifth is stock CrossPoint 2.0.0rc booted in the same emulator. All of them are derived from the emulated SSD1677 display RAM — not HTML recreations, static UI mockups or a physical reader.</sub></p>
 
 <details>
 <summary><strong>Open individual full-resolution 480 × 800 captures</strong></summary>
 
-| Home | More | YBX Settings | System Settings |
-|:---:|:---:|:---:|:---:|
-| <img src="assets/screenshots/01-home.png" width="180"> | <img src="assets/screenshots/02-more.png" width="180"> | <img src="assets/screenshots/03-ybx-settings.png" width="180"> | <img src="assets/screenshots/04-system-settings.png" width="180"> |
+| Home | More | YBX Settings | System Settings | Stock CrossPoint 2.0 |
+|:---:|:---:|:---:|:---:|:---:|
+| <img src="assets/screenshots/01-home.png" width="150"> | <img src="assets/screenshots/02-more.png" width="150"> | <img src="assets/screenshots/03-ybx-settings.png" width="150"> | <img src="assets/screenshots/04-system-settings.png" width="150"> | <img src="assets/screenshots/05-crosspoint-2.0-home.png" width="150"> |
 
 </details>
 
