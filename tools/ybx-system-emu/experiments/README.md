@@ -547,3 +547,14 @@ repeat it.
 `0073-firmware-boot-matrix-20261031.md` boots every candidate image in its own
 QEMU instance and records frames, the first frame SHA-256 and the verdict, so
 the "which image boots" table is produced by a tool instead of written by hand.
+
+## 0074 — separate kernel with the waveform and radio layers
+
+`0074-waveform-radio-kernel-20261031.md` builds a private QEMU tree on top of
+the live fixed checkout with 0069 (split BUSY windows, deep-sleep state, BUSY
+around reset) and 0071 (Wi-Fi radio Stage 1 stub) applied: binary
+`f65db0a7…`. Defaults are unchanged, the factory image and stock CrossPoint
+still boot and paint, the waveform probe passes all checks, and the radio stub
+answers its register inventory when switched on. Enabling the stub changes
+stock CrossPoint's early boot path without unblocking it, so it stays an
+opt-in instrument; the live emulator remains on `7e554ba9…`.
