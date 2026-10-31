@@ -297,3 +297,32 @@ qemu-system-xtensa: terminating on signal 15 from pid 1 (python3)
   with no name, no published port and no shared volume writes.
 - Nothing here validates the SD card content, the ROM picker, or the
   `/api/firmware` switch path — those belong to the bridge lane.
+
+---
+
+## Orchestrator note — the tool silently used the wrong QEMU (fixed 2026-10-31)
+
+The first matrix run in this lane reported `QEMU died (-11)` for the stock
+CrossPoint and inkMOD images while a live bridge boot of the same image painted
+fine. The cause was in the tool: `run_matrix()` built its default `boot`
+callback without forwarding `qemu_root`, so `--qemu-root` was ignored and the
+hard default (`qemu-0043-agent-audit-20261030`, without the 0068 PSRAM fix)
+was used for every container. Fixed: `run_matrix(..., qemu_root=...)` is now
+forwarded (boot_matrix.py:239, main at :605) and a regression test pins it
+(QemuRootForwardingTests in test_boot_matrix.py).
+
+Corrected measured table on the PSRAM-fixed build
+(`qemu-psram-fix-20261031`, binary `7e554ba9…`, 75 s window):
+
+| image | verdict | frames | first frame |
+|---|---|---|---|
+| `crosspoint-2.0.0rc-x4pro-flash-16m.bin` | booted and painted | 3 | `4329fd05…` |
+| `crosspoint-1.6.5-x4pro-flash-16m.bin` | booted and painted | 3 | `49cd0388…` |
+| `inkmod-v1.1.10-x4pro-flash-16m.bin` | booted, painted nothing | 0 | – |
+| `s3-flash-complete-rom-test.bin` | booted and painted | 4 | Home `e79c2ad5…` |
+| `ybx-ui-c663d6a0-on-factory-base.bin` | booted and painted | 4 | Home |
+| `ybx-settings-092c2be5-on-factory-base.bin` | booted and painted | 4 | Home |
+| `YBX-UI-UNRELEASED-x4pro-c663d6a0.bin` | refused before boot (not a flash image) | – | – |
+
+So the earlier "QEMU died" rows were an artefact of the tool default, not a
+property of the images.

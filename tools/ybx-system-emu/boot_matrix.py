@@ -224,7 +224,8 @@ def mark_provenance(rows, factory_digests):
 
 # --- aggregation ----------------------------------------------------------
 def run_matrix(directory, *, recursive=False, include_all=False, boot=None,
-               run_seconds=120.0, linger_seconds=5.0, log=print):
+               run_seconds=120.0, linger_seconds=5.0, qemu_root=None,
+               log=print):
     """Classify every candidate and boot each flash image; return the rows.
 
     ``boot`` is injected by the callers (and by the host tests) so the scan
@@ -235,7 +236,7 @@ def run_matrix(directory, *, recursive=False, include_all=False, boot=None,
     if not directory.is_dir():
         raise NotADirectoryError(f"not a folder: {directory}")
     boot = boot or (lambda image, **kw: boot_one_via_container(
-        image, root=directory, **kw))
+        image, root=directory, qemu_root=qemu_root, **kw))
     rows = []
     for path in candidate_images(directory, recursive, include_all):
         kind = image_kind(path)
@@ -601,6 +602,7 @@ def main(argv=None):
                       include_all=args.all_files,
                       run_seconds=args.run_seconds,
                       linger_seconds=args.linger_seconds,
+                      qemu_root=args.qemu_root,
                       log=lambda text: print(text, file=sys.stderr, flush=True))
     factory_digests = factory_sha256s(args.qa_dir)
     mark_provenance(rows, factory_digests)

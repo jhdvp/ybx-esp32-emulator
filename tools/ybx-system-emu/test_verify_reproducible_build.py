@@ -19,11 +19,11 @@ from tempfile import TemporaryDirectory
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "verify_reproducible_build.sh"
 EXPECTED_BIN_SHA = (
-    "f07744d900624ce1c34a7a62dc514092a2cc4b86c2666db90c23db42cdb42630")
+    "7e554ba9eb3e22b46eaf9d7cbcfbb2279d4b5880d1f407314fb0bbe452e13da7")
 HOME_FRAME_SHA = (
     "e79c2ad5f2b60b16fe3f20625742d5f1343f5785552d1b32c11f33c42a874672")
 AUDITED_BINARY = Path.home() / (
-    ".local/state/ybx-emulator-upstream/qemu-0043-agent-audit-20261030/"
+    ".local/state/ybx-emulator-upstream/qemu-psram-fix-20261031/"
     "build-ybx/qemu-system-xtensa")
 QA_DIR = Path.home() / (
     "Projects/YBX/artifacts/ybx-esp32-system-emulation-20261029/qa-20261029")

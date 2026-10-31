@@ -92,7 +92,7 @@ X4PRO_MACHINE = "ybx-x4pro-epd"
 # image ybx-qemu-builder:20261029 with the QEMU_BRINGUP.md configure flags.
 # Guardrails and build_reproducible_qemu.sh compare (not just record) against it.
 EXPECTED_BINARY_SHA256 = (
-    "f07744d900624ce1c34a7a62dc514092a2cc4b86c2666db90c23db42cdb42630")
+    "7e554ba9eb3e22b46eaf9d7cbcfbb2279d4b5880d1f407314fb0bbe452e13da7")
 FACTORY_FLASH_SHA256 = (
     "206ed9661bd71477d1a54397c5a2cfe490179a3f59ab094f1e7421745c609523"
 )

@@ -89,7 +89,7 @@ class HelperTests(unittest.TestCase):
     def test_expected_binary_sha_is_pinned_literal(self):
         self.assertEqual(
             chk.EXPECTED_BINARY_SHA256,
-            "f07744d900624ce1c34a7a62dc514092a2cc4b86c2666db90c23db42cdb42630")
+            "7e554ba9eb3e22b46eaf9d7cbcfbb2279d4b5880d1f407314fb0bbe452e13da7")
         self.assertRegex(chk.EXPECTED_BINARY_SHA256, r"^[0-9a-f]{64}$")
 
     def test_telemetry_patch_in_0042_chain_fails_closed(self):

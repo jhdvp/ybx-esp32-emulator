@@ -690,3 +690,35 @@ class DefaultsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QemuRootForwardingTests(unittest.TestCase):
+    """The matrix must use the QEMU tree it was given, not the hard default."""
+
+    def test_run_matrix_forwards_qemu_root_to_the_boot_stage(self):
+        import tempfile
+        from pathlib import Path as _Path
+        import boot_matrix as bm
+        calls = {}
+
+        def fake_container(image, **kwargs):
+            calls.update(kwargs)
+            return {"frames": 0, "qemu_exit_status": None,
+                    "wall_seconds": 0.0, "error": None}
+
+        original = bm.boot_one_via_container
+        bm.boot_one_via_container = fake_container
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                directory = _Path(td)
+                data = bytearray(b"\xff" * 0x20000)
+                data[0] = 0xE9
+                data[0x8000:0x8002] = b"\xaa\x50"
+                data[0x10000] = 0xE9
+                (directory / "candidate.bin").write_bytes(bytes(data))
+                bm.run_matrix(directory, qemu_root=_Path("/qemu/fixed"),
+                              run_seconds=1.0, linger_seconds=0.1,
+                              log=lambda _text: None)
+        finally:
+            bm.boot_one_via_container = original
+        self.assertEqual(str(calls.get("qemu_root")), "/qemu/fixed")
