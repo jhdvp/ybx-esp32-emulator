@@ -145,23 +145,26 @@ existing launcher suite):
 
 Harness note: the per-test `ThreadingHTTPServer` now runs
 `serve_forever(poll_interval=0.02)` (`:414-425`) — the library default 0.5 s
-made every `shutdown()` cost half a second and pushed the module past 20 s.
+made every `shutdown()` cost half a second and pushed the module past 20 s
+(it now runs in about 4 s).
 
 ## Commands run (real output)
 
 ```
 $ cd /Users/yaraslauhancharou/.local/state/xteink-agent-workspaces/ybx-emu-batch3-20261031/browser-hardening \
   && python3 -m unittest discover -s tools/ybx-system-emu -p 'test_*.py' -q
-Ran 316 tests in 6.220s
+Ran 316 tests in 9.171s
 
 OK (skipped=7)
 ```
 
-(The 7 skips are pre-existing QEMU/Docker-dependent tests in other modules.)
+(The same command at commit `aa98d53` before the report edit:
+`Ran 316 tests in 6.220s — OK (skipped=7)`. The 7 skips are pre-existing
+QEMU/Docker-dependent tests in other modules.)
 
 ```
 $ python3 -m unittest test_serve_x4pro_browser test_start_x4pro_browser -q
-Ran 62 tests in 3.817s   OK
+Ran 62 tests in 4.619s   OK
 
 $ python3 -m py_compile serve_x4pro_browser.py   → COMPILE-OK
 $ bash -n start_x4pro_browser.sh                → BASH-OK
