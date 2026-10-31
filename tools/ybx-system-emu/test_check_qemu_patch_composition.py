@@ -39,6 +39,15 @@ def patch_text(old: str, new: str) -> str:
             f" line1\n-{old}\n+{new}\n line3\n")
 
 
+def patch_text_tail(old: str, new: str) -> str:
+    """Independent hunk on the fourth line (no context overlap with patch_text)."""
+    old, new = old.strip(), new.strip()
+    return ("diff --git a/device.c b/device.c\n"
+            "--- a/device.c\n+++ b/device.c\n"
+            "@@ -3,2 +3,2 @@\n"
+            f" line3\n-{old}\n+{new}\n")
+
+
 def write_patch(workdir: Path, name: str, text: str) -> str:
     """Place a patch under a temp tools dir; returns manifest-style name."""
     patches = workdir / "patches"
@@ -50,19 +59,58 @@ def write_patch(workdir: Path, name: str, text: str) -> str:
 class HelperTests(unittest.TestCase):
     def test_real_chain_definitions_are_self_consistent(self):
         self.assertEqual(chk.verify_chain_definitions(chk.X4PRO_0042_CHAIN), [])
-        self.assertTrue(set(chk.QUARANTINED).isdisjoint(chk.X4PRO_0042_CHAIN))
-        self.assertTrue(set(chk.UNVALIDATED).isdisjoint(chk.X4PRO_0042_CHAIN))
+        self.assertEqual(chk.verify_chain_definitions(chk.X4PRO_FULL_CHAIN), [])
+        self.assertTrue(set(chk.QUARANTINED).isdisjoint(chk.X4PRO_FULL_CHAIN))
+        self.assertTrue(set(chk.REJECTED).isdisjoint(chk.X4PRO_FULL_CHAIN))
+
+    def test_full_chain_is_0042_prefix_plus_ordered_telemetry(self):
+        self.assertEqual(chk.X4PRO_FULL_CHAIN,
+                         chk.X4PRO_0042_CHAIN + chk.TELEMETRY_CHAIN)
+        self.assertEqual(chk.TELEMETRY_CHAIN[0],
+                         "experiments/0043-s3-optin-crosscore-ipi-counters.patch")
+        self.assertEqual(chk.TELEMETRY_CHAIN[1],
+                         "experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch")
+        # 0051 rewrites 0037 hunks, so it must stay last.
+        self.assertEqual(chk.TELEMETRY_CHAIN[-1],
+                         "experiments/0051-busy-telemetry-reset-order.patch")
+        self.assertEqual(chk.X4PRO_FULL_CHAIN[-1],
+                         "experiments/0051-busy-telemetry-reset-order.patch")
+
+    def test_0043_telemetry_is_audited_not_excluded(self):
+        name = "experiments/0043-s3-optin-crosscore-ipi-counters.patch"
+        self.assertIn(name, chk.X4PRO_FULL_CHAIN)
+        self.assertEqual(chk.pick_chain("full"), chk.X4PRO_FULL_CHAIN)
+        self.assertEqual(chk.pick_chain("0042"), chk.X4PRO_0042_CHAIN)
+
+    def test_expected_binary_sha_is_pinned_literal(self):
+        self.assertEqual(
+            chk.EXPECTED_BINARY_SHA256,
+            "f07744d900624ce1c34a7a62dc514092a2cc4b86c2666db90c23db42cdb42630")
+        self.assertRegex(chk.EXPECTED_BINARY_SHA256, r"^[0-9a-f]{64}$")
+
+    def test_telemetry_patch_in_0042_chain_fails_closed(self):
+        poisoned = chk.X4PRO_0042_CHAIN + chk.TELEMETRY_CHAIN[:1]
+        self.assertTrue(any("audited" in f for f in
+                            chk.verify_chain_definitions(poisoned)))
 
     def test_real_patches_pass_signature_after_roundtrip(self):
         with TemporaryDirectory() as tmp:
             manifest_path = Path(tmp) / "m.txt"
             hashes = {name: chk.file_sha256(chk.HERE / name)
-                      for name in chk.X4PRO_0042_CHAIN}
+                      for name in chk.X4PRO_FULL_CHAIN}
             chk.write_manifest(manifest_path, hashes, {},
-                               chk.X4PRO_0042_CHAIN)
+                               chk.X4PRO_FULL_CHAIN)
             manifest = chk.parse_manifest(manifest_path)
             self.assertEqual(chk.verify_patch_files(manifest,
-                                                    chk.X4PRO_0042_CHAIN), [])
+                                                    chk.X4PRO_FULL_CHAIN), [])
+            self.assertEqual(tuple(manifest["chain"]), chk.X4PRO_FULL_CHAIN)
+
+    def test_manifest_base_override_roundtrips(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "m.txt"
+            chk.write_manifest(path, {}, {}, chk.X4PRO_FULL_CHAIN,
+                               base="a" * 40)
+            self.assertEqual(chk.parse_manifest(path)["base_commit"], "a" * 40)
 
     def test_tampered_patch_is_rejected(self):
         with TemporaryDirectory() as tmp:
@@ -102,6 +150,34 @@ class HelperTests(unittest.TestCase):
                 chk.HERE = here
             self.assertEqual(text.count("new file mode 100644"), 2)
 
+    def test_normalize_strips_prose_preamble(self):
+        with TemporaryDirectory() as tmp:
+            here = chk.HERE
+            tools = Path(tmp)
+            (tools / "experiments").mkdir()
+            (tools / "experiments" / "p.patch").write_text(
+                "Some prose header\nwith lines\n\ndiff --git a/f.c b/f.c\n"
+                "--- a/f.c\n+++ b/f.c\n@@ -1,1 +1,1 @@\n-x\n+y\n")
+            chk.HERE = tools
+            try:
+                text = chk.normalize_patch("experiments/p.patch")
+            finally:
+                chk.HERE = here
+            self.assertTrue(text.startswith("diff --git a/f.c b/f.c"))
+
+    def test_normalize_without_diff_payload_raises(self):
+        with TemporaryDirectory() as tmp:
+            tools = Path(tmp)
+            (tools / "e").mkdir()
+            (tools / "e" / "bad.patch").write_text("prose only\n")
+            with self.assertRaises(RuntimeError):
+                chk.normalize_patch("e/bad.patch", tools)
+
+    def test_real_0043_patch_normalizes_to_git_payload(self):
+        text = chk.normalize_patch(
+            "experiments/0043-s3-optin-crosscore-ipi-counters.patch")
+        self.assertTrue(text.startswith("diff --git a/hw/xtensa/esp32s3_clk.c"))
+
     def test_added_files_detect_both_header_styles(self):
         added = chk.chain_added_files(chk.X4PRO_0042_CHAIN)
         self.assertIn("hw/i2c/ybx_x4pro_i2c.c", added)
@@ -109,15 +185,19 @@ class HelperTests(unittest.TestCase):
 
 
 class ComposeTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = TemporaryDirectory(prefix="ybx-compose-test-")
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        self.src = make_fake_repo(self.root)
-        self.base = run_git(self.src, "rev-parse", "HEAD").strip()
-        self.here = chk.HERE
-        chk.HERE = self.root
-        self.addCleanup(setattr, chk, "HERE", self.here)
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = TemporaryDirectory(prefix="ybx-compose-test-")
+        cls.root = Path(cls.tmp.name)
+        cls.src = make_fake_repo(cls.root)
+        cls.base = run_git(cls.src, "rev-parse", "HEAD").strip()
+        cls.here = chk.HERE
+        chk.HERE = cls.root
+
+    @classmethod
+    def tearDownClass(cls):
+        chk.HERE = cls.here
+        cls.tmp.cleanup()
 
     def _chain(self, *names):
         return list(names)
@@ -174,6 +254,146 @@ class ComposeTests(unittest.TestCase):
                       failures)
 
 
+class ComposeAndSignTests(unittest.TestCase):
+    """compose_and_sign: the host-only pre-build stage used by the builder."""
+
+    @classmethod
+    def setUpClass(cls):
+        # One shared synthetic sandbox for the whole class: individual tests
+        # never mutate the base repo or the a/b/n patches, they only add new
+        # files. Keeps the host suite under its time budget.
+        cls.tmp = TemporaryDirectory(prefix="ybx-compose-sign-")
+        cls.root = Path(cls.tmp.name)
+        cls.src = make_fake_repo(cls.root)
+        cls.base = run_git(cls.src, "rev-parse", "HEAD").strip()
+        cls.here = chk.HERE
+        chk.HERE = cls.root
+        cls.a = write_patch(cls.root, "a.patch", patch_text("line2\n", "A\n"))
+        cls.b = write_patch(cls.root, "b.patch",
+                            patch_text_tail("line4\n", "D\n"))
+        n = ("diff --git a/extra.c b/extra.c\n--- /dev/null\n+++ b/extra.c\n"
+             "@@ -0,0 +1,1 @@\n+hello\n")
+        (cls.root / "patches" / "n.patch").write_text(n)
+        cls.n = "patches/n.patch"
+
+    @classmethod
+    def tearDownClass(cls):
+        chk.HERE = cls.here
+        cls.tmp.cleanup()
+
+    def _sign(self, out, chain, **kw):
+        kw.setdefault("base", self.base)
+        return chk.compose_and_sign(self.src, out, chain, **kw)
+
+    def test_dry_run_writes_deterministic_manifest_without_building(self):
+        report = self._sign(self.root / "o1", [self.a, self.b, self.n])
+        self.assertTrue(report["ok"], report.get("failures"))
+        self.assertTrue(Path(report["manifest"]).is_file())
+        self.assertTrue(report["deterministic_recompose"])
+        # Idempotent reverse check: conflict-free chains undo fully.
+        self.assertTrue(report["reverse_undo"]["clean"])
+        manifest = Path(report["manifest"]).read_text()
+        self.assertIn("[sources]", manifest)
+        self.assertIn("extra.c", manifest)
+        # cross-run byte equality is itself the determinism proof, so the
+        # second sign skips its internal double-compose
+        other = self._sign(self.root / "o2", [self.a, self.b, self.n],
+                           determinism_check=False)
+        self.assertEqual(Path(other["manifest"]).read_text(), manifest)
+
+    def test_already_applied_patch_is_detected(self):
+        dup = write_patch(self.root, "dup.patch",
+                          (self.root / "patches" / "a.patch").read_text())
+        report = self._sign(self.root / "o3", [self.a, dup],
+                            determinism_check=False)
+        self.assertTrue(report["ok"], report.get("failures"))
+        self.assertEqual([r["state"] for r in report["patches"]],
+                         ["applied", "already-applied"])
+
+    def test_marker_checks_follow_chain_membership(self):
+        """0042-only trees must not be held to telemetry markers, but a chain
+        containing 0037/0051 must enforce busy_rise_edges (regression: the
+        first chain-gating draft defaulted chain=() and would have silenced
+        the full audited run)."""
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            panel = repo / "hw" / "display"
+            panel.mkdir(parents=True)
+            (panel / "ybx_ssd1677.c").write_text("no telemetry here\n")
+            allowed = {"hw/display/ybx_ssd1677.c"}
+            fails = chk.check_sources(repo, allowed, set(),
+                                      ("experiments/0042-s3-epd.patch",))
+            self.assertEqual(fails, [])
+            fails = chk.check_sources(repo, allowed, set(),
+                                      ("experiments/0037-x4pro-epd.patch",))
+            self.assertTrue(any("busy_rise_edges" in f for f in fails))
+        with self.assertRaises(TypeError):
+            chk.check_sources(repo, allowed, set())
+
+    def test_missing_patch_file_fails_closed(self):
+        report = self._sign(self.root / "o4", [self.a, "patches/absent.patch"])
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["stage"], "chain")
+        self.assertTrue(any("absent" in f for f in report["failures"]))
+
+    def test_wrong_base_commit_fails_closed(self):
+        with self.assertRaises(RuntimeError):
+            self._sign(self.root / "o5", [self.a], base="0" * 40)
+
+    def test_dirty_target_refuses_reuse(self):
+        out = self.root / "o6"
+        out.mkdir(parents=True)
+        (out / "composition-manifest.sha256").write_text("stale\n")
+        with self.assertRaises(RuntimeError):
+            self._sign(out, [self.a])
+
+    def test_conflicting_chain_fails_closed(self):
+        orphan = write_patch(self.root, "orphan.patch",
+                             patch_text("A\n", "Z\n"))
+        with self.assertRaises(RuntimeError):
+            self._sign(self.root / "o7", [orphan])
+
+    def test_audited_chain_drifts_are_caught(self):
+        """Simulate an audited chain + checked-in manifest comparison."""
+        chain = (self.a, self.b)
+        old_manifest = chk.MANIFEST
+        old_audited = chk.AUDITED_CHAINS
+        self.addCleanup(setattr, chk, "MANIFEST", old_manifest)
+        self.addCleanup(setattr, chk, "AUDITED_CHAINS", old_audited)
+        chk.AUDITED_CHAINS = (chain,)
+        chk.MANIFEST = self.root / "checked-in.sha256"
+        good = self._sign(self.root / "o8", chain, compare_manifest=False)
+        self.assertTrue(good["ok"], good.get("failures"))
+        # The audited path signs the real tree once; reuse its manifest as the
+        # checked-in reference, then tamper a source hash.
+        import shutil
+        shutil.copyfile(good["manifest"], chk.MANIFEST)
+        text = chk.MANIFEST.read_text()
+        src_line = [ln for ln in text.splitlines()
+                    if ln.endswith("  device.c")][0]
+        tampered = text.replace(src_line, "f" * 64 + "  device.c")
+        chk.MANIFEST.write_text(tampered)
+        bad = self._sign(self.root / "o9", chain)
+        self.assertFalse(bad["ok"])
+        self.assertTrue(any("differ from checked-in" in f
+                            for f in bad["failures"]))
+
+    def test_tampered_patch_bytes_reject_audited_compose(self):
+        chain = (self.a, self.b)
+        old_manifest = chk.MANIFEST
+        old_audited = chk.AUDITED_CHAINS
+        self.addCleanup(setattr, chk, "MANIFEST", old_manifest)
+        self.addCleanup(setattr, chk, "AUDITED_CHAINS", old_audited)
+        chk.AUDITED_CHAINS = (chain,)
+        chk.MANIFEST = self.root / "checked-in.sha256"
+        hashes = {name: "0" * 64 for name in chain}
+        chk.write_manifest(chk.MANIFEST, hashes, {}, chain, base=self.base)
+        report = self._sign(self.root / "o10", chain)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("differs from manifest" in f
+                            for f in report["failures"]))
+
+
 class ProvenanceTests(unittest.TestCase):
     def _image(self, root: Path, **flags) -> Path:
         size = flags.get("size", 0x10001)
@@ -223,6 +443,27 @@ class ProvenanceTests(unittest.TestCase):
             joined = " ".join(report["failures"])
             self.assertIn("audited base", joined)
             self.assertIn("not the audited factory build", joined)
+
+    def test_guardrails_compare_pinned_binary_sha(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = make_fake_repo(root)
+            flash = self._image(root)
+            rom = root / "rom.bin"
+            rom.write_bytes(b"\x00" * 16)
+            qbin = root / "qemu-system-xtensa"
+            qbin.write_bytes(b"not the pinned build\n")
+            report = chk.acceptance_guardrails(src, flash, rom, qbin)
+            joined = " ".join(report["failures"])
+            self.assertIn("pinned full-chain build", joined)
+            digest = chk.file_sha256(qbin)
+            self.assertIn(digest, report["provenance"]["qemu_bin_sha256"])
+            old = chk.EXPECTED_BINARY_SHA256
+            chk.EXPECTED_BINARY_SHA256 = digest
+            self.addCleanup(setattr, chk, "EXPECTED_BINARY_SHA256", old)
+            report = chk.acceptance_guardrails(src, flash, rom, qbin)
+            self.assertFalse(
+                [f for f in report["failures"] if "pinned full-chain" in f])
 
     def test_superseded_flash_is_named_in_failure(self):
         with TemporaryDirectory() as tmp:

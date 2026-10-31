@@ -1,5 +1,5 @@
 # QEMU patch composition manifest — regenerate with:
-#   python3 check_qemu_patch_composition.py record
+#   python3 check_qemu_patch_composition.py record --qemu-src <checkout>
 # Fail-closed: any unlisted or rehashed patch file rejects audit.
 [base]
 commit=febae182e132e4055529be423a818225ebddaa3a
@@ -24,6 +24,9 @@ experiments/0019-s3-gt911-guest-i2c-readback-counters.patch
 experiments/0023-x4pro-standalone-idle-button-pullups.patch
 experiments/0024-s3-systimer-readonly-comparator-counters.patch
 experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch
+experiments/0043-s3-optin-crosscore-ipi-counters.patch
+experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch
+experiments/0051-busy-telemetry-reset-order.patch
 [patches]
 905ad6078d29aca14866320f86aaf95ee2631a9aed056c18a5dc9a77af3be795  experiments/0002-s3-rom-dram-experiment.patch
 b28c0fa1fd1af8d906bf04f3e3ca62b002f71e5bfbaeae1eaa6332bd89927d5f  experiments/0004-s3-rom-initializer-trial.patch
@@ -46,14 +49,16 @@ e2007596f7418438b586716373f2d7c9249230de9125a7052b2c8b83fd73c9b0  experiments/00
 7989e16cfe1b36c7e5ca3e094a293c47f3b7f7f366fbaa0cc3dd5ac61889b6b8  experiments/0022-s3-gpio-level-irq-deassert.patch
 5039adcaa59a8e0dda975bf6ac9a8abefeee717ef1798f7ed7df96409268bf04  experiments/0023-x4pro-standalone-idle-button-pullups.patch
 db0e973bea23f16f641053821e8dbada2c870fca098809fa89bdc84f5e3d5e77  experiments/0024-s3-systimer-readonly-comparator-counters.patch
+747926119d3e0a95cf35c34af7a78d3b018be4f7f858a7418a4f1b6947a71f3e  experiments/0037-x4pro-epd-busy-window-edge-telemetry.patch
 19d7036705965b20398b3714e78d6c678463e680ae024840b8507b6b2b9b5ba8  experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch
-1ed03f76f24a48fc05f8391e21fe713c2257e94b14c9d571b471df85c8cbf016  experiments/0043-s3-optin-crosscore-ipi-counters.patch
+d54b362720ce28103657dfedc97cb17aaff45911af9935f722dd3c70611e2bfa  experiments/0043-s3-optin-crosscore-ipi-counters.patch
+198707e06fc68342e3180b354f398b52dd25b0af85bfe64c25e81989699db2cc  experiments/0051-busy-telemetry-reset-order.patch
 2029f49895c873ae3164ae5766329c470f37c9a561569797f413d44ae4e0ae53  patches/0001-esp32c3-gdma-interrupt-layout.patch
 81f4e296d3e66dadc51e433067d2040c4eb97caca055567647c404f6009ceddf  patches/0003-usb-serial-jtag-tx-ready.patch
 b3f9123da0f5316d87b0da7fbb897d71dbe0467deb1380a03e84298be2a08f45  patches/0005-usb-serial-jtag-output.patch
 [sources]
 3d79dced3763c2c2366ebce498ebecc969fb7822b9fbfe8b643356331ffef97a  hw/display/meson.build
-1075149f98e31482c2d98890f7ab3b8c51d21ef44b7e5c6ffde7b1943096a6de  hw/display/ybx_ssd1677.c
+cd81fae14610971c79b55c3537c6ddf9587c7939376c0a1955b00e3925cd9013  hw/display/ybx_ssd1677.c
 8867c2607481cbdfd08672dbfe96358b6e97d4c5513a44eda433faa6d3cda9b9  hw/dma/esp32c3_gdma.c
 3bc7759f02101cf36104728176f9d6d0e03d77bd0a456cfc6d445da855d78101  hw/gpio/esp32_gpio.c
 e84c3dc82451bc513f28380ddc9d5113adbe54a6a733223bd09e3d3ed3a0bb63  hw/i2c/esp32_i2c.c
@@ -65,11 +70,15 @@ ffba13bc8f04b58ca69a501d4e2ddb2ad1a3655907e15b7be9a10e7f162aad1c  hw/riscv/esp32
 ca2d5bad1c27ed1b2be471b0d8ae178f66438babe3999c073529b08e0bd4f4fe  hw/ssi/meson.build
 b4b1ab55b860b140d5badbf438a6573fffa06a180fb7cd4b10724ab9a0e39f60  hw/ssi/ybx_esp32s3_spi2.c
 4ad688ffee644adc27d0caff4f86fa471fa1eb82219578b7f9558ba1e4115703  hw/timer/esp_systimer.c
-4c531abb2c4bc834632bb8b07d1c05b9402f604f7411cfbf1f448d67749a519b  hw/xtensa/esp32s3.c
-52ea95622a5c87958aaf55a22d196bafdc810f6adc2e37e1859344beda08efd6  include/hw/display/ybx_ssd1677.h
+75134cca599907a26dae2b45a32e3b8e14d2275616fbfd47f81f0d799ba93553  hw/xtensa/esp32s3.c
+a2471826bd20df84ab769fb17203a0266774b1676ba2647317663a6ea6100334  hw/xtensa/esp32s3_clk.c
+3ff2d8ae49a9add9fbae41ee44fceb97ab812de43043c5b1c5c5c03844514b6a  hw/xtensa/esp32s3_intc.c
+d0bd650ba1e6cbb7963cdce646bab3c3de10f0320fdaf8a19e8b4d2dff9627aa  include/hw/display/ybx_ssd1677.h
 83835d9f9758b049ff763c5dd59731d249846522a6330edc096920cde3eee41f  include/hw/gpio/esp32_gpio.h
 3ac686791c02b3f81723f0f67841e9d7a50f8d3460ab0960c8d2983a87b8b4f6  include/hw/i2c/esp32_i2c.h
 095223611f1d3f77c2d3c58a60893f636a74720aac3bbe90c7b047013a24cdee  include/hw/misc/esp32c3_jtag.h
 9bea2790d2803362b4f21e46e3a2af0fee51966900a4f612014b4b9489d61b70  include/hw/sd/dwc_sdmmc.h
 8a10b239a5a86fb6bcb174416ca2e5ab9c61fe39dd29ea284c1ffa2fe62ced77  include/hw/ssi/ybx_esp32s3_spi2.h
 8284518e79adf4a9a9b8250e7d61cb65e32ccc57dc5c7d0a2d687f1889f79f66  include/hw/timer/esp_systimer.h
+0ac98baaa8b550c1dc19152ae114b00f80d293a3a101d2e5a494a6d96e8ebf61  include/hw/xtensa/esp32s3_clk.h
+f3ba4119607d59eab4a7dbf8893816a4481067404a4839e5583922c7a5e605a8  include/hw/xtensa/esp32s3_intc.h
