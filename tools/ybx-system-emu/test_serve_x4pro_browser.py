@@ -42,6 +42,12 @@ def browser_guest(**overrides):
     guest.png_etag = '"f42-old-sha"'
     guest.png_mtime = 1_700_000_000.0
     guest.qmp = Mock(return_value={"return": {}})
+    guest.firmware_name = "factory.bin"
+    guest.firmware_sha = FACTORY_FLASH_SHA
+    guest.firmware_path = Path(tempfile.mkdtemp(prefix="ybx-x4pro-fwpath-")) \
+        / "factory.bin"
+    guest.firmware_path.write_bytes(b"\xe9" + b"\xff" * 0x20000)
+    guest.boot_started_at = time.monotonic()
     guest._launch = Mock()
     guest._stop_process = Mock()
     for key, value in overrides.items():
@@ -422,6 +428,24 @@ class FakeGuest:
         self.frames = 3
         self.boot_wait_seconds = 3
         self.boot_failed = False
+        self.firmware_items = ()
+
+    def firmware_info(self):
+        return {"name": "factory.bin", "sha256": FACTORY_FLASH_SHA,
+                "provenance": "factory-flash",
+                "provenance_note": "Factory flash image",
+                "known_factory_image": True}
+
+    def firmwares(self):
+        return {"firmwares": list(self.firmware_items),
+                "active": "factory.bin", "truncated": False,
+                "limit": 64, "max_hash_bytes": 64 * 1024 * 1024}
+
+    def switch_firmware(self, name):
+        self.firmware_switches.append(name)
+        return {"name": name, "sha256": "b" * 64, "kind": "flash",
+                "provenance": "custom",
+                "provenance_note": "Custom ROM of unknown provenance"}
 
     def rom_info(self):
         item = next(i for i in self.ROM_ITEMS if i["name"] == self.rom_name)
@@ -441,6 +465,7 @@ class FakeGuest:
                 "boot_wait_seconds": self.boot_wait_seconds,
                 "boot_failed": self.boot_failed,
                 "sha256": "0" * 64, "factory_guest": True,
+                "firmware": self.firmware_info(),
                 "rom": self.rom_info(),
                 "physical_device": False}
 
@@ -1150,3 +1175,166 @@ class LauncherBindGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)  # missing artifacts, as prepared
         self.assertNotIn("WARNING: exposing", result.stderr)
         self.assertNotIn("Refusing", result.stderr)
+
+
+FACTORY_FLASH_SHA = ("206ed9661bd71477d1a54397c5a2cfe490179a3f59ab094f1e742"
+                     "1745c609523")
+
+
+def make_flash_image(path, size=0x20000, valid=True):
+    """Minimal ESP flash image; valid=False leaves it without the app layout."""
+    data = bytearray(b"\xff" * size)
+    data[0] = 0xE9
+    if valid:
+        data[0x8000:0x8002] = b"\xaa\x50"
+        data[0x10000] = 0xE9
+    Path(path).write_bytes(bytes(data))
+    return hashlib.sha256(bytes(data)).hexdigest()
+
+
+def make_sd_image(path, size=0x400):
+    data = bytearray(b"\x00" * size)
+    data[0x1FE:0x200] = b"\x55\xaa"
+    Path(path).write_bytes(bytes(data))
+    return hashlib.sha256(bytes(data)).hexdigest()
+
+
+def firmware_guest(**overrides):
+    """browser_guest plus a real firmware folder and work dir on disk."""
+    guest = browser_guest()
+    guest.qmp = Mock(return_value={"return": 4})
+    guest.frame = 4
+    root = Path(tempfile.mkdtemp(prefix="ybx-x4pro-fw-"))
+    guest.guest_tmpdir = root
+    guest.workdir = root / "work"
+    guest.workdir.mkdir(parents=True)
+    guest.firmware_dir = root / "firmware"
+    guest.firmware_dir.mkdir()
+    guest.firmware_name = "factory.bin"
+    guest.firmware_sha = FACTORY_FLASH_SHA
+    guest.firmware_path = Path(tempfile.mkdtemp(prefix="ybx-x4pro-fwpath-")) \
+        / "factory.bin"
+    guest.firmware_path.write_bytes(b"\xe9" + b"\xff" * 0x20000)
+    guest.boot_started_at = time.monotonic()
+    guest.rom_dir = root / "roms"
+    guest.rom_dir.mkdir()
+    guest.rom_name = "factory.bin"
+    guest.rom_sha = FACTORY_ROM_SHA
+    for key, value in overrides.items():
+        setattr(guest, key, value)
+    return guest
+
+
+class FirmwarePickerTests(unittest.TestCase):
+    def setUp(self):
+        self.guest = firmware_guest()
+        self.flash_sha = make_flash_image(
+            self.guest.firmware_dir / "own-build.bin")
+        self.sd_sha = make_sd_image(self.guest.firmware_dir / "own-build.img")
+        make_flash_image(self.guest.firmware_dir / "broken.bin", valid=False)
+        (self.guest.firmware_dir / "app-only.bin").write_bytes(b"\x73" * 32)
+
+    def test_listing_reports_kind_size_and_hash(self):
+        listing = self.guest.firmwares()
+        by_name = {item["name"]: item for item in listing["firmwares"]}
+        self.assertEqual(by_name["own-build.bin"]["kind"], "flash")
+        self.assertEqual(by_name["own-build.bin"]["sha256"], self.flash_sha)
+        self.assertEqual(by_name["own-build.img"]["kind"], "sd")
+        self.assertEqual(by_name["app-only.bin"]["kind"], "unknown")
+        self.assertEqual(by_name["broken.bin"]["kind"], "unknown")
+        self.assertFalse(by_name["own-build.bin"]["active"])
+
+    def test_switch_installs_the_image_and_restarts_the_guest(self):
+        self.guest.frame = 42
+        self.guest.sha = "old-sha"
+        result = self.guest.switch_firmware("own-build.bin")
+        self.assertEqual(result["name"], "own-build.bin")
+        self.assertEqual(result["sha256"], self.flash_sha)
+        self.assertEqual(result["kind"], "flash")
+        self.assertEqual(result["provenance"], "custom")
+        self.assertEqual(self.guest.firmware_name, "own-build.bin")
+        self.assertEqual(self.guest.firmware_sha, self.flash_sha)
+        installed = (self.guest.workdir / "flash.bin").read_bytes()
+        self.assertEqual(installed[0], 0xE9)
+        self.assertEqual(self.guest.frame, -1)     # frame cache was reset
+        self.assertEqual(self.guest.sha, "")
+        self.guest._launch.assert_called_once()
+
+    def test_switch_copies_the_paired_sd_image(self):
+        self.guest.switch_firmware("own-build.bin")
+        self.assertTrue((self.guest.workdir / "sd.img").is_file())
+
+    def test_a_file_that_is_not_a_flash_image_is_refused(self):
+        with self.assertRaises(BadRequestError):
+            self.guest.switch_firmware("app-only.bin")
+        with self.assertRaises(BadRequestError):
+            self.guest.switch_firmware("broken.bin")
+        self.guest._launch.assert_not_called()
+
+    def test_traversal_and_unknown_names_are_refused(self):
+        for name in ("../outside.bin", "/etc/passwd", "sub/dir.bin"):
+            with self.subTest(name=name):
+                with self.assertRaises(BadRequestError):
+                    self.guest.switch_firmware(name)
+        with self.assertRaises(RomNotFoundError):
+            self.guest.switch_firmware("missing.bin")
+
+    def test_state_reports_the_active_firmware_and_its_provenance(self):
+        state = self.guest.state()
+        self.assertEqual(state["firmware"]["name"], "factory.bin")
+        self.assertTrue(state["firmware"]["known_factory_image"])
+        self.assertTrue(state["factory_guest"])
+        self.guest.switch_firmware("own-build.bin")
+        self.guest.frame = 4   # keep the fake guest out of the frame-cache path
+        state = self.guest.state()
+        self.assertEqual(state["firmware"]["name"], "own-build.bin")
+        self.assertFalse(state["firmware"]["known_factory_image"])
+        self.assertFalse(state["factory_guest"],
+                         "a custom build must not be presented as factory firmware")
+
+
+class FirmwareHttpContractTests(ServerHarnessMixin):
+    def setUp(self):
+        super().setUp()
+        self.guest.firmware_items = [
+            {"name": "own-build.bin", "size": 131072, "sha256": "a" * 64,
+             "kind": "flash", "active": False, "provenance": "custom",
+             "provenance_note": "Custom ROM of unknown provenance"},
+            {"name": "factory.bin", "size": 16777216,
+             "sha256": FACTORY_FLASH_SHA, "kind": "flash", "active": True,
+             "provenance": "factory-flash",
+             "provenance_note": "Factory flash image"},
+        ]
+        self.guest.firmware_switches = []
+
+    def test_firmware_list_is_served(self):
+        status, body = self.json_request("GET", "/api/firmware")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["active"], "factory.bin")
+        self.assertEqual(body["firmwares"][0]["name"], "own-build.bin")
+        self.assertEqual(body["firmwares"][0]["kind"], "flash")
+
+    def test_firmware_switch_is_accepted(self):
+        status, body = self.json_request(
+            "POST", "/api/firmware",
+            body=json.dumps({"name": "own-build.bin"}),
+            headers={"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["accepted"])
+        self.assertEqual(body["action"], "firmware-switch")
+
+    def test_unknown_firmware_name_is_a_typed_error(self):
+        status, body = self.json_request(
+            "POST", "/api/firmware",
+            body=json.dumps({"name": "missing.bin"}),
+            headers={"Content-Type": "application/json"})
+        self.assertEqual(status, 404)
+        self.assertIn("error", body)
+
+    def test_traversal_in_firmware_name_is_refused(self):
+        status, body = self.json_request(
+            "POST", "/api/firmware",
+            body=json.dumps({"name": "../outside.bin"}),
+            headers={"Content-Type": "application/json"})
+        self.assertEqual(status, 400)
+        self.assertIn("plain file name", body["error"])

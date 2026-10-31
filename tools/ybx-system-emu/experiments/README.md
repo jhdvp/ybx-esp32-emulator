@@ -486,3 +486,18 @@ reported as unavailable, never as zero), ETag/Last-Modified caching on
 400/429/503 answers, and a stricter private-bind predicate with a loud
 no-authentication warning. Verified against the running instance: live counter
 values and a 304 reply.
+
+## 0067 — firmware picker: boot the operator's own build, honestly
+
+`0067-batch3-firmware-picker-20261031.md` adds a second in-page picker for the
+guest firmware image, mirroring the ROM picker: a read-only folder on the Mac
+(`YBX_FIRMWARE_DIR`), `GET /api/firmware`, `POST /api/firmware`, and a page
+control with the active image, its SHA-256 and its provenance. Images are
+classified by their bytes (ESP flash layout, FAT/SD signature) and a file that
+is not a valid ESP flash image is refused before the guest is touched.
+`/api/state` no longer hardcodes `factory_guest: true` - it is derived from the
+active flash SHA-256, so a custom build is never presented as the factory
+firmware. Verified live: the operator's own builds boot and paint, the
+application-only image and any path traversal are refused, and the upstream
+CrossPoint and inkMOD images are documented as not booting yet (the crash
+follows the CrossPoint-built bootloader, not the application).

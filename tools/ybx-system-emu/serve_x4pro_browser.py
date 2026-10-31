@@ -114,6 +114,29 @@ def guest_ready_for_touch(frames):
     return frames >= 2
 
 
+def image_kind(path):
+    """Classify a candidate image by its own bytes, not by its name.
+
+    "flash" - an ESP flash image: bootloader magic 0xE9 at 0x0, partition
+    table 0xAA50 at 0x8000, application magic 0xE9 at 0x10000.
+    "sd"    - a FAT/SD image: MBR signature 0x55AA at 0x1FE.
+    "unknown" - anything else; such a file is never booted.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(0x10010)
+    except OSError:
+        return "unknown"
+    if len(head) < 0x200:
+        return "unknown"
+    if (len(head) >= 0x10010 and head[0] == 0xE9
+            and head[0x8000:0x8002] == b"\xaa\x50" and head[0x10000] == 0xE9):
+        return "flash"
+    if head[0x1FE:0x200] == b"\x55\xaa":
+        return "sd"
+    return "unknown"
+
+
 def sha256_file(path, max_bytes):
     """Streaming SHA-256 of a candidate ROM file.
 
@@ -174,6 +197,12 @@ not an HTML mockup. Tap directly on the reader screen to send a
 <p><button id="loadrom" disabled>Load ROM</button></p>
 <p id="romactive"><small>Active ROM: loading…</small></p>
 <p id="romerror" class="romerror" hidden></p>
+<h2>Guest firmware</h2>
+<p><select id="fwlist" aria-label="Candidate firmware images in --firmware-dir">
+<option value="">Loading firmware list…</option></select></p>
+<p><button id="loadfw" disabled>Load firmware</button></p>
+<p id="fwactive"><small>Active firmware: loading…</small></p>
+<p id="fwerror" class="romerror" hidden></p>
 <p><strong>Wi-Fi radio is not emulated.</strong> Join a Network,
 Calibre Wireless and Create Hotspot cannot connect from this factory guest.
 Attempting network setup may stop its interface responding; use
@@ -192,7 +221,10 @@ const info=document.getElementById('info'),metrics=document.getElementById('metr
 const refresh=document.getElementById('refresh'),reboot=document.getElementById('reboot');
 const romList=document.getElementById('romlist'),loadRom=document.getElementById('loadrom');
 const romActive=document.getElementById('romactive'),romError=document.getElementById('romerror');
+const fwList=document.getElementById('fwlist'),loadFw=document.getElementById('loadfw');
+const fwActive=document.getElementById('fwactive'),fwError=document.getElementById('fwerror');
 let ready=false,lastFrame=-1,busy=false,ticks=0,romLoaded=false,romBusy=false;
+let fwLoaded=false,fwBusy=false;
 async function poll(){
  try{
    const response=await fetch('/api/state',{cache:'no-store'});
@@ -212,6 +244,7 @@ async function poll(){
      lastFrame=s.frames;img.src='/screen.png?frame='+s.frames;
    }
    if(s.rom)showRomActive(s.rom);
+   if(s.firmware)showFwActive(s.firmware);
    if(++ticks%3===0)showTelemetry();
  }catch(e){ready=false;status.textContent='Emulator unavailable: '+e.message}
 }
@@ -249,6 +282,43 @@ async function loadRomList(){
    o.value='';o.textContent='ROM list unavailable';
    romList.appendChild(o);
    romList.disabled=true;loadRom.disabled=true;
+ }
+}
+function showFwActive(fw){
+ const sha=fw.sha256?fw.sha256.slice(0,16)+'…':'not hashed';
+ fwActive.textContent='Active firmware: '+fw.name+' · '+sha+' · '
+   +(fw.provenance_note||fw.provenance||'unknown');
+}
+async function loadFwList(){
+ try{
+   const response=await fetch('/api/firmware',{cache:'no-store'});
+   const r=await response.json();
+   if(!response.ok)throw new Error(r.error||'Firmware list read failed');
+   fwList.innerHTML='';fwList.disabled=false;
+   r.firmwares.forEach(function(item){
+     const o=document.createElement('option');
+     o.value=item.name;
+     o.textContent=item.name+' · '+(item.size/1048576).toFixed(1)+' MiB'
+       +(item.kind&&item.kind!=='flash'?' · '+item.kind:' · flash')
+       +(item.sha256?'':' · too large to hash')+(item.active?' · active':'');
+     if(item.active)o.selected=true;
+     fwList.appendChild(o);
+   });
+   if(!r.firmwares.length){
+     const o=document.createElement('option');
+     o.value='';o.textContent='No firmware images in the firmware folder';
+     fwList.appendChild(o);
+   }
+   if(r.truncated)fwList.title='List capped at '+r.limit+' entries';
+   fwLoaded=true;
+   loadFw.disabled=fwBusy||!fwList.value;
+ }catch(e){
+   // The page must stay usable when /api/firmware is unavailable.
+   fwLoaded=false;fwList.innerHTML='';
+   const o=document.createElement('option');
+   o.value='';o.textContent='Firmware list unavailable';
+   fwList.appendChild(o);
+   fwList.disabled=true;loadFw.disabled=true;
  }
 }
 const METRIC_LABELS={'ybx-epd-busy-rise-edges':'BUSY up','ybx-epd-busy-fall-edges':'BUSY down',
@@ -311,7 +381,25 @@ loadRom.addEventListener('click',async function(){
  }catch(e){romError.textContent='Load ROM failed: '+e.message;romError.hidden=false}
  finally{romBusy=false;loadRom.disabled=!romLoaded||!romList.value;poll()}
 });
-poll();loadRomList();setInterval(poll,1000);
+loadFw.addEventListener('click',async function(){
+ if(fwBusy||!fwList.value)return;
+ fwBusy=true;loadFw.disabled=true;fwError.hidden=true;
+ status.textContent='Loading firmware '+fwList.value+'…';
+ try{
+   const response=await fetch('/api/firmware',{method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({name:fwList.value})});
+   const result=await response.json();
+   if(!response.ok)throw new Error(result.error||'Firmware switch failed');
+   lastFrame=-1;ready=false;img.removeAttribute('src');
+   await loadFwList();
+   showFwActive({name:result.name,sha256:result.sha256,
+                 provenance_note:result.provenance_note});
+   status.textContent='Firmware '+result.name+' is now active; the guest restarts below';
+ }catch(e){fwError.textContent='Load firmware failed: '+e.message;fwError.hidden=false}
+ finally{fwBusy=false;loadFw.disabled=!fwLoaded||!fwList.value;poll()}
+});
+poll();loadRomList();loadFwList();setInterval(poll,1000);
 })();
 </script></body></html>"""
 
@@ -341,6 +429,10 @@ class FactoryX4Pro:
     ROM_LIST_LIMIT = 64
     ROM_MAX_HASH_BYTES = 64 * 1024 * 1024
     ROM_FILENAME_IN_WORKDIR = "esp32s3_rev0_rom.bin"
+    FW_LIST_LIMIT = 64
+    FW_MAX_HASH_BYTES = 64 * 1024 * 1024
+    FW_FLASH_FILENAME_IN_WORKDIR = "flash.bin"
+    FW_SD_FILENAME_IN_WORKDIR = "sd.img"
 
     def __init__(self, args):
         self.temp = TemporaryDirectory(prefix="ybx-x4pro-browser-")
@@ -354,6 +446,12 @@ class FactoryX4Pro:
                             or Path(args.rom).parent)
         self.rom_name = Path(args.rom).name
         self.rom_sha = sha256_file(Path(args.rom), self.ROM_MAX_HASH_BYTES)
+        self.firmware_dir = Path(getattr(args, "firmware_dir", None)
+                                 or Path(args.flash).parent)
+        self.firmware_name = Path(args.flash).name
+        self.firmware_path = Path(args.flash)
+        self.firmware_sha = sha256_file(Path(args.flash),
+                                        self.FW_MAX_HASH_BYTES)
         self.qemu_bin = args.qemu_bin
         self.lock = threading.RLock()
         self.tap_lock = threading.Lock()
@@ -461,7 +559,10 @@ class FactoryX4Pro:
                     "boot_wait_seconds":waited,
                     "boot_failed":bool(frames == 0
                                        and waited >= self.BOOT_FAIL_AFTER_SECONDS),
-                    "sha256":self.sha,"factory_guest":True,
+                    "sha256":self.sha,
+                    "factory_guest":self.provenance_of(self.firmware_sha)
+                                      == "factory-flash",
+                    "firmware":self.firmware_info(),
                     "rom":self.rom_info(),
                     "physical_device":False}
 
@@ -637,6 +738,168 @@ class FactoryX4Pro:
         return {"name": name, "sha256": sha, "provenance": provenance,
                 "provenance_note": PROVENANCE_LABELS[provenance]}
 
+    # --- firmware picker ----------------------------------------------------
+    def firmware_info(self):
+        provenance = self.provenance_of(self.firmware_sha)
+        return {"name": self.firmware_name,
+                "sha256": self.firmware_sha,
+                "provenance": provenance,
+                "provenance_note": PROVENANCE_LABELS[provenance],
+                "known_factory_image": provenance == "factory-flash"}
+
+    def firmwares(self):
+        """List candidate firmware images in firmware_dir (read-only).
+
+        Regular files only, symlinks are skipped and never followed, sorted by
+        name, capped in count and in hashed size. Each entry carries the image
+        kind: "flash" for a valid ESP flash image, "sd" for a FAT/SD image and
+        "unknown" otherwise. A file that cannot be hashed is reported with
+        sha256=null and an error, never with a fabricated hash.
+        """
+        candidates = []
+        with os.scandir(self.firmware_dir) as entries:
+            for entry in entries:
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                if Path(entry.name).suffix.lower() not in (".bin", ".img"):
+                    continue  # only image files are offered as candidates
+                candidates.append(entry)
+        candidates.sort(key=lambda entry: entry.name)
+        truncated = len(candidates) > self.FW_LIST_LIMIT
+        items = []
+        for entry in candidates[:self.FW_LIST_LIMIT]:
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            path = Path(entry.path)
+            item = {"name": entry.name, "size": info.st_size,
+                    "sha256": None,
+                    "kind": image_kind(path),
+                    "active": entry.name == self.firmware_name}
+            try:
+                item["sha256"] = sha256_file(path, self.FW_MAX_HASH_BYTES)
+            except OSError:
+                item["error"] = "file could not be read for hashing"
+            if item["sha256"] is None and "error" not in item:
+                item["error"] = (f"larger than {self.FW_MAX_HASH_BYTES} "
+                                 "bytes; not hashed")
+            provenance = self.provenance_of(item["sha256"])
+            item["provenance"] = provenance
+            item["provenance_note"] = PROVENANCE_LABELS[provenance]
+            items.append(item)
+        if not any(item["name"] == self.firmware_name for item in items):
+            # The running image may live outside the folder; still show it.
+            try:
+                size = self.firmware_path.stat().st_size
+            except OSError:
+                size = None
+            provenance = self.provenance_of(self.firmware_sha)
+            items.insert(0, {"name": self.firmware_name, "size": size,
+                             "sha256": self.firmware_sha,
+                             "kind": image_kind(self.firmware_path),
+                             "active": True, "in_folder": False,
+                             "provenance": provenance,
+                             "provenance_note": PROVENANCE_LABELS[provenance]})
+        return {"firmwares": items, "active": self.firmware_name,
+                "truncated": truncated,
+                "limit": self.FW_LIST_LIMIT,
+                "max_hash_bytes": self.FW_MAX_HASH_BYTES}
+
+    def _resolve_firmware_target(self, name):
+        """Map a client-supplied name to a regular file inside firmware_dir."""
+        if (not isinstance(name, str) or not name or name in (".", "..")
+                or "\x00" in name or "/" in name or "\\" in name
+                or os.sep in name or (os.altsep and os.altsep in name)):
+            raise BadRequestError("Firmware name must be a plain file name "
+                                  "inside --firmware-dir")
+        candidate = self.firmware_dir / name
+        try:
+            info = os.lstat(candidate)
+        except OSError:
+            raise RomNotFoundError(f"Unknown firmware: {name}") from None
+        if not stat.S_ISREG(info.st_mode):
+            raise BadRequestError(f"{name} is not a regular file in "
+                                  "--firmware-dir")
+        resolved = candidate.resolve()
+        if resolved.parent != self.firmware_dir.resolve():
+            raise BadRequestError(f"{name} resolves outside --firmware-dir")
+        return resolved
+
+    def switch_firmware(self, name):
+        """Boot the named firmware image and restart the guest.
+
+        Only a valid ESP flash image is accepted; anything else is refused
+        before the guest is touched. Acceptance means the new process came up
+        and accepted QMP - it is not a claim that the guest booted, which the
+        frame counter in /api/state decides.
+        """
+        target = self._resolve_firmware_target(name)
+        kind = image_kind(target)
+        if kind != "flash":
+            raise BadRequestError(
+                f"{name} is not an ESP flash image (kind={kind}); refusing to "
+                "load it")
+        try:
+            size = target.stat().st_size
+        except OSError:
+            raise RomNotFoundError(f"Firmware vanished while loading: {name}") \
+                from None
+        if size > self.FW_MAX_HASH_BYTES:
+            raise BadRequestError(f"Firmware {name} is larger than "
+                                  f"{self.FW_MAX_HASH_BYTES} bytes; refusing "
+                                  "to load an unverified image")
+        try:
+            sha = sha256_file(target, self.FW_MAX_HASH_BYTES)
+        except OSError:
+            raise RomNotFoundError(f"Firmware vanished while loading: {name}") \
+                from None
+        if sha is None:
+            raise BadRequestError(f"Firmware {name} grew past the hash cap "
+                                  "while loading; retry")
+        self._begin_action()
+        try:
+            with self.lock:
+                self._clear_touch_state_quietly()
+                self._stop_process()
+                if self.client is not None:
+                    self.client.close()
+                staged = self.workdir / (self.FW_FLASH_FILENAME_IN_WORKDIR
+                                         + ".new")
+                shutil.copyfile(target, staged)
+                os.replace(staged, self.workdir
+                           / self.FW_FLASH_FILENAME_IN_WORKDIR)
+                paired = self._paired_sd_image(target)
+                if paired is not None:
+                    staged_sd = self.workdir / (self.FW_SD_FILENAME_IN_WORKDIR
+                                               + ".new")
+                    shutil.copyfile(paired, staged_sd)
+                    os.replace(staged_sd, self.workdir
+                               / self.FW_SD_FILENAME_IN_WORKDIR)
+                self.firmware_name = name
+                self.firmware_sha = sha
+                self._reset_frame_cache()
+                self._launch()
+        finally:
+            self._end_action()
+        provenance = self.provenance_of(sha)
+        return {"name": name, "sha256": sha, "kind": kind,
+                "provenance": provenance,
+                "provenance_note": PROVENANCE_LABELS[provenance]}
+
+    def _paired_sd_image(self, flash_path):
+        """SD image with the same stem in firmware_dir, if there is one."""
+        candidate = flash_path.with_suffix(".img")
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            return None
+        return None
+
     def _begin_action(self):
         """Serialize touches and resets behind a bounded queue.
 
@@ -794,6 +1057,8 @@ def make_handler(emu):
                     self.response_json(200,emu.telemetry())
                 elif path == "/api/roms":
                     self.response_json(200,emu.roms())
+                elif path == "/api/firmware":
+                    self.response_json(200,emu.firmwares())
                 elif path == "/screen.png":
                     self.serve_screen()
                 else:
@@ -836,6 +1101,39 @@ def make_handler(emu):
             self.response_json(200,{"accepted":True,"action":"rom-switch",
                                     **result})
 
+        def handle_firmware_switch(self):
+            try:
+                try:
+                    if self.headers.get("Content-Type","").split(";",1)[0]!="application/json":
+                        raise BadRequestError("Use application/json")
+                    try:
+                        size=int(self.headers.get("Content-Length","0"))
+                    except ValueError:
+                        raise BadRequestError("Invalid Content-Length")
+                    if not 0 < size <= 256:
+                        raise BadRequestError("Invalid payload size")
+                    payload=json.loads(self.rfile.read(size))
+                except ValueError as exc:
+                    raise BadRequestError(str(exc)) from exc
+                if not isinstance(payload,dict):
+                    raise BadRequestError("Firmware payload must be a JSON object")
+                name=payload.get("name")
+                if not isinstance(name,str):
+                    raise BadRequestError("name must be a string")
+                result=emu.switch_firmware(name)
+            except BadRequestError as exc:
+                self.response_json(exc.http_status,
+                                   {"error":str(exc),"type":exc.kind})
+                return
+            except GuestError as exc:
+                self.guest_failure(exc)
+                return
+            except (RuntimeError,OSError) as exc:
+                self.response_json(503,{"error":str(exc)})
+                return
+            self.response_json(200,{"accepted":True,"action":"firmware-switch",
+                                    **result})
+
         def do_POST(self):
             if self.path=="/api/reboot":
                 try:
@@ -848,6 +1146,9 @@ def make_handler(emu):
                 return
             if self.path=="/api/rom":
                 self.handle_rom_switch()
+                return
+            if self.path=="/api/firmware":
+                self.handle_firmware_switch()
                 return
             if self.path!="/api/tap":
                 self.response_json(404,{"error":"Not found"})
@@ -892,6 +1193,9 @@ def main():
     p.add_argument("--rom-dir",type=Path,
                    help="read-only folder of candidate ROM files; "
                         "defaults to the directory of --rom")
+    p.add_argument("--firmware-dir",type=Path,
+                   help="read-only folder of candidate firmware images; "
+                        "defaults to the directory of --flash")
     p.add_argument("--host",default="127.0.0.1")
     p.add_argument("--port",type=int,default=8784)
     args=p.parse_args()
@@ -901,6 +1205,10 @@ def main():
     if not rom_dir.is_dir():
         p.error(f"--rom-dir {rom_dir} is not an existing directory")
     args.rom_dir=rom_dir
+    firmware_dir=(args.firmware_dir or args.flash.parent).resolve()
+    if not firmware_dir.is_dir():
+        p.error(f"--firmware-dir {firmware_dir} is not an existing directory")
+    args.firmware_dir=firmware_dir
     emu=FactoryX4Pro(args)
     try:
         server=ThreadingHTTPServer((args.host,args.port),make_handler(emu))

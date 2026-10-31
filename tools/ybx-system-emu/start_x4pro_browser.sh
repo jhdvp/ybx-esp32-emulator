@@ -11,6 +11,9 @@ BIND_IP="${YBX_BROWSER_BIND_ADDRESS:-127.0.0.1}"
 # Folder of candidate ROM files for the in-page picker. The bridge only READS
 # it (mounted :ro); the operator drops his own .bin files here on the Mac.
 ROM_DIR="${YBX_ROM_DIR:-${QA_ROOT%/*}/roms}"
+# Folder of candidate firmware images for the in-page picker. The bridge only
+# READS it (mounted :ro); the operator drops his own .bin files here on the Mac.
+FW_DIR="${YBX_FIRMWARE_DIR:-${QA_ROOT%/*}/firmware}"
 CONTAINER="ybx-x4pro-browser-${PORT}"
 IMAGE="ybx-qemu-builder:20261029"
 if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
@@ -42,6 +45,12 @@ for file in "$QEMU_ROOT/build-ybx/qemu-system-xtensa" \
   [[ -f "$file" ]] || { echo "Missing required experimental file: $file" >&2; exit 2; }
 done
 [[ -d "$ROM_DIR" ]] || { echo "Creating ROM folder for the picker: $ROM_DIR" >&2; mkdir -p "$ROM_DIR"; }
+[[ -d "$FW_DIR" ]] || { echo "Creating firmware folder for the picker: $FW_DIR" >&2; mkdir -p "$FW_DIR"; }
+# Seed the factory flash once so "switch back to factory" is always possible
+# from the picker. The bridge server itself only reads FW_DIR (mounted :ro).
+if [[ ! -e "$FW_DIR/s3-flash-complete-rom-test.bin" ]]; then
+  cp "$QA_ROOT/s3-flash-complete-rom-test.bin" "$FW_DIR/s3-flash-complete-rom-test.bin"
+fi
 # Seed the factory ROM once so "switch back" is always possible from the
 # picker. The bridge server itself only reads ROM_DIR (mounted :ro).
 if [[ ! -e "$ROM_DIR/s3-full-rom-generator-test.bin" ]]; then
@@ -66,15 +75,18 @@ if ! docker container inspect "$CONTAINER" >/dev/null 2>&1; then
     -v "$HERE:/tests:ro" \
     -v "$QA_ROOT:/work:ro" \
     -v "$ROM_DIR:/roms:ro" \
+    -v "$FW_DIR:/fw:ro" \
     -w /tmp "$IMAGE" \
     python3 -u /tests/serve_x4pro_browser.py \
       --qemu-bin /qemu/build-ybx/qemu-system-xtensa \
       --rom /work/s3-full-rom-generator-test.bin \
       --rom-dir /roms \
+      --firmware-dir /fw \
       --flash /work/s3-flash-complete-rom-test.bin \
       --sd-image /work/ybx-test-sd-fat16-mbr-pristine.img \
       --host 0.0.0.0 --port "$PORT"
 fi
 echo "Open: http://$BIND_IP:$PORT/ (LAN binding has NO authentication; trusted network only)"
 echo "ROM folder (read-only for the bridge; drop .bin files here to offer them in the picker): $ROM_DIR"
+echo "Firmware folder (read-only for the bridge; drop firmware .bin files here): $FW_DIR"
 echo "Stop: docker stop $CONTAINER"

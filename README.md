@@ -49,6 +49,7 @@
 | GPIO6 / panel BUSY / IRQ | 🟢 **Working (instrumented)** | CPU interrupt routing, BUSY edge/duration counters; reset-order defect fixed and re-verified on factory firmware ([0051](tools/ybx-system-emu/experiments/0051-busy-telemetry-reset-verification-20261030.md)) |
 | SDMMC / FAT media | 🟡 **Partial** | SDMMC DMA reads and selected FAT image workflows verified; not full card parity |
 | Browser interface | 🟢 **Working** | Live display, touch injection, reset, QEMU crash recovery, read-only `/api/telemetry`, ETag caching, bounded tap queue |
+| ROM / firmware pickers | 🟢 **Working** | Choose the guest ROM and the guest firmware image from read-only folders on the Mac; the active image, its SHA-256 and its provenance are shown, and a custom build is never presented as the factory image ([0066](tools/ybx-system-emu/experiments/0066-batch3-rom-selection.md), [0067](tools/ybx-system-emu/experiments/0067-batch3-firmware-picker-20261031.md)) |
 | GUI navigation acceptance | 🟢 **Working** | Home → More → YBX Settings → System settings → Back verified against the running guest with per-step SSD1677 SHA gates ([0062](tools/ybx-system-emu/experiments/0062-batch3-nav-automation.md)) |
 | Patched QEMU build | 🟢 **Reproducible (composition)** | The audited chain composes deterministically from the pinned base `febae18` with a signed manifest; the container build is opt-in and not yet executed end to end ([0063](tools/ybx-system-emu/experiments/0063-batch3-repro-build.md)) |
 | Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Factory register accesses are pinned and an opt-in non-fake stub is proposed ([0060](tools/ybx-system-emu/experiments/0060-batch3-wifi-radio.md)); no scan, association, address, frame or TLS is produced |
@@ -152,6 +153,7 @@ tools/ybx-system-emu/
 - [x] Reproducible chain composition from a clean checkout with a signed manifest
 - [x] Multi-step GUI acceptance runner with per-step frame SHA gates
 - [x] Read-only browser telemetry (BUSY edges, BUSY duration, frame counters)
+- [x] In-page pickers for the guest ROM and the guest firmware image
 - [ ] Execute the reproducible container build end to end and publish its binary SHA
 - [ ] Add proper ESP32-S3 Wi-Fi radio/MAC support and isolated connection testing
 - [ ] Expand SSD1677 waveform, sleep/reset and power correctness in the running emulator
