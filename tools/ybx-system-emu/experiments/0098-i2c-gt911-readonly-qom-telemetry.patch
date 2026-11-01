@@ -1,0 +1,310 @@
+--- a/include/hw/i2c/esp32_i2c.h
++++ b/include/hw/i2c/esp32_i2c.h
+@@ -25,6 +25,18 @@
+     Fifo8 tx_fifo;
+     bool trans_ongoing;
+     bool modern_cmd_encoding;
++    /* Non-mutating diagnostic counters visible to QMP. Persistent across
++     * digital reset to correlate the first pre/post wake I2C transaction. */
++    uint32_t ybx_trans_starts;
++    uint32_t ybx_nacks;
++    uint32_t ybx_completes;
++    uint32_t ybx_end_detects;
++    uint32_t ybx_irq_raises;
++    uint32_t ybx_cmd_count;
++    uint32_t ybx_last_addr;
++    uint32_t ybx_last_cmd;
++    uint32_t ybx_last_int_raw;
++    uint32_t ybx_last_int_ena;
+ 
+     uint32_t ctr_reg;
+     uint32_t timeout_reg;
+--- a/hw/i2c/esp32_i2c.c
++++ b/hw/i2c/esp32_i2c.c
+@@ -46,6 +46,11 @@
+ static void esp32_i2c_update_irq(Esp32I2CState * s)
+ {
+     int irq_state = !!(s->int_raw_reg & s->int_ena_reg);
++    if (irq_state) {
++        s->ybx_irq_raises++;
++    }
++    s->ybx_last_int_raw = s->int_raw_reg;
++    s->ybx_last_int_ena = s->int_ena_reg;
+     qemu_set_irq(s->irq, irq_state);
+ }
+ 
+@@ -108,6 +113,7 @@
+             error_report("esp32_i2c: slave mode not implemented");
+         }
+         if (FIELD_EX32(value, I2C_CTR, TRANS_START)) {
++            s->ybx_trans_starts++;
+             esp32_i2c_do_transaction(s);
+             value &= ~ R_I2C_CTR_TRANS_START_MASK;
+         }
+@@ -179,6 +185,8 @@
+     bool stop_or_end = false;
+     for (int i_cmd = 0; i_cmd < ESP32_I2C_CMD_COUNT && !stop_or_end; ++i_cmd) {
+         uint32_t cmd = s->cmd_reg[i_cmd];
++        s->ybx_cmd_count++;
++        s->ybx_last_cmd = cmd;
+         char opcode = FIELD_EX32(cmd, I2C_CMD, OPCODE);
+         if (s->modern_cmd_encoding) {
+             if (opcode == I2C_MODERN_OPCODE_RSTART) {
+@@ -200,12 +208,14 @@
+                     s->trans_ongoing = true;
+                     uint8_t data = fifo8_pop(&s->tx_fifo);
+                     uint8_t addr = data >> 1;
++                    s->ybx_last_addr = addr;
+                     uint8_t is_read = data & 0x1;
+                     if (i2c_start_transfer(s->bus, addr, is_read) != 0) {
+                         /* NACK */
+                         if (FIELD_EX32(cmd, I2C_CMD, ACK_CHECK_EN)
+                             && FIELD_EX32(cmd, I2C_CMD, ACK_EXP) == 0) {
+                             s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, ACK_ERR, 1);
++                            s->ybx_nacks++;
+                             stop_or_end = true;
+                         }
+                         s->trans_ongoing = false;
+@@ -236,10 +246,12 @@
+                 i2c_end_transfer(s->bus);
+                 s->trans_ongoing = false;
+                 s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, TRANS_COMPLETE, 1);
++                s->ybx_completes++;
+                 stop_or_end = true;
+                 break;
+             case I2C_OPCODE_END:
+                 s->int_raw_reg = FIELD_DP32(s->int_raw_reg, I2C_INT_RAW, END_DETECT, 1);
++                s->ybx_end_detects++;
+                 stop_or_end = true;
+                 break;
+             default:
+@@ -267,6 +279,28 @@
+     sysbus_init_irq(sbd, &s->irq);
+ 
+     s->bus = i2c_init_bus(DEVICE(s), "i2c");
++
++    /* Read-only per-controller diagnostics, no device ACK emulation. */
++    object_property_add_uint32_ptr(obj, "ybx-trans-starts",
++                                   &s->ybx_trans_starts, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-nacks",
++                                   &s->ybx_nacks, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-completes",
++                                   &s->ybx_completes, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-end-detects",
++                                   &s->ybx_end_detects, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-irq-raises",
++                                   &s->ybx_irq_raises, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-cmd-count",
++                                   &s->ybx_cmd_count, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-last-addr",
++                                   &s->ybx_last_addr, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-last-cmd",
++                                   &s->ybx_last_cmd, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-last-int-raw",
++                                   &s->ybx_last_int_raw, OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-last-int-ena",
++                                   &s->ybx_last_int_ena, OBJ_PROP_FLAG_READ);
+ 
+     fifo8_create(&s->tx_fifo, ESP32_I2C_FIFO_LENGTH);
+     fifo8_create(&s->rx_fifo, ESP32_I2C_FIFO_LENGTH);
+--- a/hw/i2c/ybx_x4pro_i2c.c
++++ b/hw/i2c/ybx_x4pro_i2c.c
+@@ -244,11 +244,57 @@
+     qemu_irq touch_irq;
+     /* Actual guest I2C instrumentation: QMP injection alone is not a
+      * firmware-observed touch. Read counters let tests distinguish. */
++    uint32_t gate_nacks;
++    uint32_t gate_acks;
++    uint32_t rail_transitions;
++    uint32_t reset_transitions;
++    uint32_t last_reset_low_us;
++    uint32_t qualified_reset_rises;
++    uint32_t short_reset_rises;
++    uint32_t unarmed_reset_rises;
+     uint32_t status_reads;
+     uint32_t point_reads;
+     uint32_t status_clears;
+     uint32_t injected_frames;
+ };
++
++/* Host-only GT911 state evidence; never changes the power gate. */
++static bool gt911_qom_powered(Object *obj, Error **errp)
++{
++    return YBX_GT911(obj)->powered;
++}
++
++static bool gt911_qom_ready(Object *obj, Error **errp)
++{
++    YbxGT911 *s = YBX_GT911(obj);
++    return s->powered && s->reset_high &&
++           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >= s->ready_after_ns;
++}
++
++static bool gt911_qom_master_rail(Object *obj, Error **errp)
++{
++    return YBX_GT911(obj)->master_rail_high;
++}
++
++static bool gt911_qom_touch_rail(Object *obj, Error **errp)
++{
++    return YBX_GT911(obj)->touch_power_low;
++}
++
++static bool gt911_qom_reset_high(Object *obj, Error **errp)
++{
++    return YBX_GT911(obj)->reset_high;
++}
++
++static bool gt911_qom_ready_timer_armed(Object *obj, Error **errp)
++{
++    return YBX_GT911(obj)->ready_after_ns != INT64_MAX;
++}
++
++static bool gt911_qom_reset_low_seen(Object *obj, Error **errp)
++{
++    return YBX_GT911(obj)->reset_low_seen;
++}
+ 
+ static void gt911_update_irq(YbxGT911 *s)
+ {
+@@ -304,6 +350,7 @@
+      * then GPIO2 LOW enables the GT911-specific rail. */
+     bool powered = s->master_rail_high && s->touch_power_low;
+     if (s->powered != powered) {
++        s->rail_transitions++;
+         s->powered = powered;
+         /* Power applied with RESET held LOW counts toward the reset pulse. */
+         s->reset_low_seen = powered && !s->reset_high;
+@@ -336,27 +383,35 @@
+     if (s->reset_high == high) {
+         return;
+     }
++    s->reset_transitions++;
+     s->reset_high = high;
+     if (!high) {
+         s->reset_low_since_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+         s->reset_low_seen = s->powered;
+-        /* LOW is effective on the I2C bus immediately, but a pulse shorter
+-         * than the existing 2ms minimum is a glitch, not a valid reset.
+-         * Preserve the previous ready timer/contact data until a qualified
+-         * reset or an actual power cycle is observed. */
+-        gt911_update_irq(s);
+-    } else if (s->powered && s->reset_low_seen &&
+-               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+-               s->reset_low_since_ns >= 2000000LL) {
+-        /* INT is sampled at the rising edge of RST. */
+-        I2C_SLAVE(s)->address = s->interrupt_high ? 0x14 : 0x5d;
+-        s->ready_after_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+-                            50000000LL;
+-        s->data_ready = false;
+-        s->injected_state = 0;
++        /* GPIO reset goes active immediately, so the device NACKs while
++         * the line is LOW. But a sub-minimum glitch must not destroy the
++         * previous readiness timer/contact state permanently. Commit the
++         * reset only after the LOW pulse meets the existing 2ms minimum. */
+         gt911_update_irq(s);
+     } else {
+-        /* Restore IRQ/readiness after a sub-minimum reset glitch. */
++        int64_t low_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
++                         s->reset_low_since_ns;
++        s->last_reset_low_us = low_ns > 0 ? MIN(low_ns / 1000, UINT32_MAX) : 0;
++        if (s->powered && s->reset_low_seen && low_ns >= 2000000LL) {
++            s->qualified_reset_rises++;
++            /* INT is sampled at the rising edge of RST. */
++            I2C_SLAVE(s)->address = s->interrupt_high ? 0x14 : 0x5d;
++            s->ready_after_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                                50000000LL;
++            s->data_ready = false;
++            s->injected_state = 0;
++        } else if (s->powered && s->reset_low_seen) {
++            s->short_reset_rises++;
++        } else {
++            s->unarmed_reset_rises++;
++        }
++        /* A short glitch only deasserts reset; restore status/IRQ if the
++         * chip had already completed its last properly qualified reset. */
+         gt911_update_irq(s);
+     }
+ }
+@@ -373,8 +428,10 @@
+     if (event == I2C_START_SEND || event == I2C_START_RECV) {
+         if (!s->powered || !s->reset_high ||
+             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->ready_after_ns) {
++            s->gate_nacks++;
+             return 1; /* Genuine I2C NACK while unpowered/in reset. */
+         }
++        s->gate_acks++;
+         if (event == I2C_START_SEND) {
+             s->address_bytes = 0;
+         }
+@@ -468,6 +525,31 @@
+     qdev_init_gpio_in_named(DEVICE(s), gt911_int_pin, "ybx.gt911.int", 1);
+     qdev_init_gpio_out_named(DEVICE(s), &s->touch_irq,
+                              "ybx.gt911.touch-irq", 1);
++    object_property_add_bool(obj, "ybx-power-present", gt911_qom_powered, NULL);
++    object_property_add_bool(obj, "ybx-ready", gt911_qom_ready, NULL);
++    object_property_add_bool(obj, "ybx-master-rail-high", gt911_qom_master_rail, NULL);
++    object_property_add_bool(obj, "ybx-touch-rail-low", gt911_qom_touch_rail, NULL);
++    object_property_add_bool(obj, "ybx-reset-high", gt911_qom_reset_high, NULL);
++    object_property_add_bool(obj, "ybx-ready-timer-armed",
++                             gt911_qom_ready_timer_armed, NULL);
++    object_property_add_bool(obj, "ybx-reset-low-seen",
++                             gt911_qom_reset_low_seen, NULL);
++    object_property_add_uint32_ptr(obj, "ybx-gate-nacks", &s->gate_nacks,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-gate-acks", &s->gate_acks,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rail-transitions", &s->rail_transitions,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-reset-transitions", &s->reset_transitions,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-last-reset-low-us", &s->last_reset_low_us,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-qualified-reset-rises", &s->qualified_reset_rises,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-short-reset-rises", &s->short_reset_rises,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-unarmed-reset-rises", &s->unarmed_reset_rises,
++                                   OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "inject-x", &s->injected_x,
+                                     OBJ_PROP_FLAG_READWRITE);
+     object_property_add_uint32_ptr(obj, "inject-y", &s->injected_y,
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -514,6 +514,36 @@
+                                   OBJECT(s->ybx_gt911), "status-clears");
+         object_property_add_alias(OBJECT(s), "ybx-touch-injected-frames",
+                                   OBJECT(s->ybx_gt911), "injected-frames");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-power-present",
++                                  OBJECT(s->ybx_gt911), "ybx-power-present");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-ready",
++                                  OBJECT(s->ybx_gt911), "ybx-ready");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-master-rail-high",
++                                  OBJECT(s->ybx_gt911), "ybx-master-rail-high");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-touch-rail-low",
++                                  OBJECT(s->ybx_gt911), "ybx-touch-rail-low");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-reset-high",
++                                  OBJECT(s->ybx_gt911), "ybx-reset-high");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-gate-nacks",
++                                  OBJECT(s->ybx_gt911), "ybx-gate-nacks");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-gate-acks",
++                                  OBJECT(s->ybx_gt911), "ybx-gate-acks");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-rail-transitions",
++                                  OBJECT(s->ybx_gt911), "ybx-rail-transitions");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-reset-transitions",
++                                  OBJECT(s->ybx_gt911), "ybx-reset-transitions");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-ready-timer-armed",
++                                  OBJECT(s->ybx_gt911), "ybx-ready-timer-armed");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-reset-low-seen",
++                                  OBJECT(s->ybx_gt911), "ybx-reset-low-seen");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-last-reset-low-us",
++                                  OBJECT(s->ybx_gt911), "ybx-last-reset-low-us");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-qualified-reset-rises",
++                                  OBJECT(s->ybx_gt911), "ybx-qualified-reset-rises");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-short-reset-rises",
++                                  OBJECT(s->ybx_gt911), "ybx-short-reset-rises");
++        object_property_add_alias(OBJECT(s), "ybx-gt911-unarmed-reset-rises",
++                                  OBJECT(s->ybx_gt911), "ybx-unarmed-reset-rises");
+     }
+ 
+     qdev_prop_set_bit(DEVICE(&s->sdmmc), "ybx-x4pro-sd-power",
