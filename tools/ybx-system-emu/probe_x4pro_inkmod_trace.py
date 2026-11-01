@@ -201,6 +201,10 @@ def classify_outcome(timeline: list[dict], epd: dict, rtc: dict,
                 "reason": "QMP produced no CPU samples"}
     uart = uart or {}
     if uart.get("panic"):
+        if uart.get("deep_sleep_rejected_then_abort"):
+            return {**result, "verdict": "deep_sleep_rejected_abort",
+                    "reason": "ESP-IDF esp_deep_sleep_start() aborts after "
+                              "RTC sleep rejection; this is not a successful wake"}
         cpu0_pc = timeline[-1].get("cpu0_pc")
         in_rom = cpu0_pc is not None and ROM_PC_RANGE[0] <= cpu0_pc < ROM_PC_RANGE[1]
         verdict = "rom_panic" if in_rom else "guest_panic"
@@ -255,6 +259,11 @@ def summarize_uart(data: bytes) -> dict:
                         if marker in text],
         "panic": panic_line is not None,
         "panic_text": panic_line,
+        "deep_sleep_rejected_then_abort": bool(re.search(
+            r"Deep sleep request is rejected.{0,300}abort\(\) was called",
+            text, re.S)),
+        "deep_sleep_reset_seen": "rst:0x5 (DSLEEP)" in text,
+        "i2c_invalid_state_count": text.count("ESP_ERR_INVALID_STATE"),
     }
 
 
@@ -540,9 +549,10 @@ def main() -> int:
     parser.add_argument("--machine", default=MACHINE)
     parser.add_argument("--stack-words", type=int, default=64,
                         help="words dumped at each CPU A1 after sampling")
-    parser.add_argument("--inject-rtc", choices=("wakeup", "reject"),
+    parser.add_argument("--inject-rtc", choices=("wakeup", "reject", "deep-wakeup"),
                         help="EXPLICIT test-only QMP RTC event after first sleep request; "
-                             "not a simulated physical wake source")
+                             "deep-wakeup requests a digital reset, not a returning "
+                             "SLP_WAKEUP; not a simulated physical EXT1 wake source")
     parser.add_argument("--exec-trace", action="store_true",
                         help="private-tree -d exec restricted to inkMOD ranges")
     args = parser.parse_args()

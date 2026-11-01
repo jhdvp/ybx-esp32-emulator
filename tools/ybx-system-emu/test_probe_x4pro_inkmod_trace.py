@@ -252,3 +252,34 @@ class ExecLogSummary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeepSleepOutcomeClassification(unittest.TestCase):
+    def test_esp_idf_rejected_deep_sleep_abort_is_not_a_successful_boot(self):
+        uart = summarize_uart(b"E (1487) sleep: Deep sleep request is rejected\r\n"
+                              b"abort() was called at PC 0x40377508 on core 1\r\n"
+                              b"Rebooting...\r\n")
+        self.assertTrue(uart["deep_sleep_rejected_then_abort"])
+        report = classify_outcome(timeline([(0x4037A4A8, 0x4037FCDF)] * 3),
+                                  {"frames": 2, "commands": 50}, {}, {}, uart)
+        self.assertEqual(report["verdict"], "deep_sleep_rejected_abort")
+
+    def test_deep_sleep_reset_with_painted_frame_is_not_abort(self):
+        uart = summarize_uart(b"rst:0x1 (POWERON)\r\n"
+                              b"rst:0x5 (DSLEEP)\r\n"
+                              b"ESP_ERR_INVALID_STATE\r\n")
+        self.assertTrue(uart["deep_sleep_reset_seen"])
+        self.assertEqual(uart["i2c_invalid_state_count"], 1)
+        self.assertFalse(uart["deep_sleep_rejected_then_abort"])
+        report = classify_outcome(timeline([(0x4037B546, 0x4037B546)] * 3),
+                                  {"frames": 3, "commands": 69}, {}, {}, uart)
+        self.assertEqual(report["verdict"], "painted")
+
+    def test_reject_message_without_following_abort_is_not_misclassified(self):
+        uart = summarize_uart(b"Deep sleep request is rejected\r\n"
+                              b"still running after rejected sleep\r\n")
+        self.assertFalse(uart["deep_sleep_rejected_then_abort"])
+        self.assertFalse(uart["panic"])
+        uart = summarize_uart(b"abort() was called at PC 0x40377508\r\n"
+                              b"Deep sleep request is rejected\r\n")
+        self.assertFalse(uart["deep_sleep_rejected_then_abort"])

@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/host-macOS%20%2B%20Docker-586D70?style=flat-square)
 ![Guest](https://img.shields.io/badge/guest-ESP32--S3%20%2F%20ESP32--C3-567965?style=flat-square)
 [![Host checks](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml/badge.svg)](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml)
-![Tests](https://img.shields.io/badge/local%20tests-886%20pass%20%7C%2010%20skip-567965?style=flat-square)
+![Tests](https://img.shields.io/badge/local%20tests-892%20pass%20%7C%2010%20skip-567965?style=flat-square)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20GPL--2.0%20patches-567965?style=flat-square)](LICENSING.md)
 
 [**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap) · [**Status snapshot**](STATUS.md)
@@ -52,13 +52,13 @@
 | ROM / firmware pickers | 🟢 **Working** | Choose the guest ROM and the guest firmware image from read-only folders on the Mac; the active image, its SHA-256 and its provenance are shown, and a custom build is never presented as the factory image ([0066](tools/ybx-system-emu/experiments/0066-batch3-rom-selection.md), [0067](tools/ybx-system-emu/experiments/0067-batch3-firmware-picker-20261031.md)) |
 | GUI navigation acceptance | 🟢 **Working** | Home → More → YBX Settings → System settings → Back verified against the running guest with per-step SSD1677 SHA gates ([0062](tools/ybx-system-emu/experiments/0062-batch3-nav-automation.md)) |
 | Patched QEMU build | 🟢 **Reproducible (composition)** | The 26-patch chain composes from pinned base `febae18` and reproduces the live QEMU binary byte-for-byte in a clean-room container ([STATUS](STATUS.md), [0072](tools/ybx-system-emu/experiments/0072-reproducible-build-e2e-20261031.md)) |
-| Upstream CrossPoint / inkMOD images | 🟡 **Boots (CrossPoint)** | Stock CrossPoint 2.0.0rc and 1.6.5 boot and paint their own UI after the 0068 PSRAM bounds fix; inkMOD still does not paint on the live kernel; its RTC handshake is under isolated investigation ([0096](tools/ybx-system-emu/experiments/0096-s3-rtc-sleep-handshake-20261101.md)) |
+| Upstream CrossPoint / inkMOD images | 🟡 **Boots (CrossPoint)** | Stock CrossPoint 2.0.0rc and 1.6.5 boot and paint their own UI after the 0068 PSRAM bounds fix; inkMOD still does not paint on the live kernel; in the **isolated 0097 experiment**, explicit deep-sleep digital reset makes it paint 3 frames, but repeated I²C errors prevent full acceptance ([0096](tools/ybx-system-emu/experiments/0096-s3-rtc-sleep-handshake-20261101.md), [0097](tools/ybx-system-emu/experiments/0097-s3-rtc-deep-wakeup-reset-20261101.md)) |
 | Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Factory register accesses are pinned and an opt-in non-fake stub is proposed ([0060](tools/ybx-system-emu/experiments/0060-batch3-wifi-radio.md)); no scan, association, address, frame or TLS is produced |
 | TLS and cloud services | ⚪ **Unverified** | No verified end-to-end guest TLS session; do not infer it from host networking |
 | Power / sleep / waveform timing | 🟢 **Modelled** | Host lifecycle models and telemetry, not physical E-Ink fidelity; split power/waveform BUSY windows, a real deep-sleep state and BUSY around reset are in the running kernel ([0069](tools/ybx-system-emu/experiments/0069-epd-waveform-apply-20261031.md)) |
 | X3 / X4 / other panels | 🟡 **Early bring-up** | CPU milestones exist; full interactive device coverage is not claimed |
 
-**Evidence:** with the companion CrossPoint firmware and the local firmware artifacts present: 896 tests (886 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
+**Evidence:** with the companion CrossPoint firmware and the local firmware artifacts present: 902 tests (892 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
 
 ## How it works
 

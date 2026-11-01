@@ -1,0 +1,78 @@
+--- a/include/hw/misc/esp32s3_rtc_cntl.h
++++ b/include/hw/misc/esp32s3_rtc_cntl.h
+@@ -87,6 +87,7 @@
+     uint32_t sleep_requests;
+     uint32_t injected_wakeups;
+     uint32_t injected_rejects;
++    uint32_t deep_wake_resets;
+     uint32_t options0_reg;
+     uint64_t time_reg;
+     uint32_t sw_cpu_stall_reg;
+--- a/hw/misc/esp32s3_rtc_cntl.c
++++ b/hw/misc/esp32s3_rtc_cntl.c
+@@ -68,6 +68,26 @@
+     }
+ }
+ 
++/* An accepted deep sleep never returns to the guest instruction after
++ * RTC_CNTL_SLEEP_EN. A later external wake starts a *digital reset*, while
++ * the RTC domain and reset cause survive. This opt-in QMP input is a test
++ * hook, not an implementation of the EXT1/timer/GPIO wake fabric. */
++static void esp32s3_rtc_set_deep_wakeup(Object *obj, bool event, Error **errp)
++{
++    Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(obj);
++
++    if (!event || !(s->state0_reg & R_RTC_CNTL_STATE0_SLEEP_EN_MASK)) {
++        return;
++    }
++    s->state0_reg &= ~R_RTC_CNTL_STATE0_SLEEP_EN_MASK;
++    s->rtc_int_raw &= ~RTC_CNTL_SLEEP_INT_MASK;
++    esp32s3_rtc_update_irq(s);
++    s->reset_cause[0] = ESP32_DEEPSLEEP_RESET;
++    s->reset_cause[1] = ESP32_DEEPSLEEP_RESET;
++    s->deep_wake_resets++;
++    qemu_irq_pulse(s->dig_reset_req);
++}
++
+ static uint64_t esp32s3_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(opaque);
+@@ -274,6 +294,7 @@
+     s->state0_reg = s->wakeup_state_reg = s->sleep_reject_conf_reg = 0;
+     s->rtc_int_ena = s->rtc_int_raw = 0;
+     s->sleep_requests = s->injected_wakeups = s->injected_rejects = 0;
++    s->deep_wake_resets = 0;
+     esp32s3_rtc_update_irq(s);
+ }
+ 
+@@ -294,6 +315,8 @@
+                              esp32s3_rtc_get_event, esp32s3_rtc_set_wakeup);
+     object_property_add_bool(obj, "ybx-rtc-inject-reject",
+                              esp32s3_rtc_get_event, esp32s3_rtc_set_reject);
++    object_property_add_bool(obj, "ybx-rtc-inject-deep-wakeup",
++                             esp32s3_rtc_get_event, esp32s3_rtc_set_deep_wakeup);
+     object_property_add_uint32_ptr(obj, "ybx-rtc-int-raw", &s->rtc_int_raw,
+                                    OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "ybx-rtc-sleep-requests", &s->sleep_requests,
+@@ -301,6 +324,8 @@
+     object_property_add_uint32_ptr(obj, "ybx-rtc-injected-wakeups", &s->injected_wakeups,
+                                    OBJ_PROP_FLAG_READ);
+     object_property_add_uint32_ptr(obj, "ybx-rtc-injected-rejects", &s->injected_rejects,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-deep-wake-resets", &s->deep_wake_resets,
+                                    OBJ_PROP_FLAG_READ);
+     qdev_init_gpio_out_named(DEVICE(sbd), &s->dig_reset_req, ESP32S3_RTC_DIG_RESET_GPIO, 1);
+     qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_reset_req[0], ESP32S3_RTC_CPU_RESET_GPIO, ESP32S3_CPU_COUNT);
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -458,6 +458,10 @@
+                               OBJECT(&s->rtc_cntl), "ybx-rtc-injected-wakeups");
+     object_property_add_alias(OBJECT(s), "ybx-rtc-injected-rejects",
+                               OBJECT(&s->rtc_cntl), "ybx-rtc-injected-rejects");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-inject-deep-wakeup",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-inject-deep-wakeup");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-deep-wake-resets",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-deep-wake-resets");
+ 
+     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32S3_RTC_DIG_RESET_GPIO, 0,
+                                 qdev_get_gpio_in_named(dev, ESP32S3_RTC_DIG_RESET_GPIO, 0));
