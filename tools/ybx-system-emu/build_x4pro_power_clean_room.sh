@@ -45,8 +45,10 @@ done
 [ "$BUILD" -eq 1 ] || die "use --build to authorize an offline compile (or --help)"
 [ -n "$WORK_DIR" ] || die "specify a new --work-dir"
 [ -d "$WORK_DIR" ] || die "work directory does not exist: $WORK_DIR"
-[ -d "$UPSTREAM/.git" ] || die "upstream Git object repository missing: $UPSTREAM"
+# This safety check is intentionally independent of local QEMU availability,
+# so it works fail-closed even on a fresh CI host without any QEMU checkout.
 [ ! -e "$WORK_DIR/compose" ] || die "refusing to reuse or overwrite $WORK_DIR/compose"
+[ -d "$UPSTREAM/.git" ] || die "upstream Git object repository missing: $UPSTREAM"
 printf '%s\n' "$JOBS" | grep -Eq '^[1-9][0-9]*$' || die "jobs must be a positive integer"
 command -v python3 >/dev/null || die "python3 missing"
 command -v git >/dev/null || die "git missing"
