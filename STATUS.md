@@ -13,7 +13,7 @@ reports; each row links to the evidence.
 | Live binary SHA-256 | `f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236` |
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
 | Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
-| Host tests | 896 tests, 10 skipped (with the companion firmware artifacts present, verified 2026-11-01) |
+| Host tests | 902 tests, 10 skipped (with the companion firmware artifacts present, verified 2026-11-01) |
 | Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
@@ -23,7 +23,7 @@ reports; each row links to the evidence.
 | Boot the factory YBX image and paint | ✅ verified (Home `e79c2ad5…`) |
 | Boot stock CrossPoint 2.0.0rc and 1.6.5 | ✅ verified (Home `78e743450b8f…` / `9efb6cf59096…`) |
 | Boot local YBX builds | ✅ verified |
-| Boot inkMOD 1.1.10 | ⚠️ starts, paints nothing; stop point traced to the IPC/RTC sleep handshake |
+| Boot inkMOD 1.1.10 | ⚠️ **live 8784:** RTC poll, no paint. **Isolated 0097:** explicit QMP deep-wakeup performs `DSLEEP` digital reset and produces 3 frames, but repeated I²C `ESP_ERR_INVALID_STATE`; not fully working ([0097](tools/ybx-system-emu/experiments/0097-s3-rtc-deep-wakeup-reset-20261101.md)) |
 | Touch (GT911), navigation, reboot | ✅ verified end to end with frame SHA gates |
 | E-Ink BUSY telemetry in the browser | ✅ `/api/telemetry`, balanced edges, 350 ms windows |
 | SSD1677 deep sleep / split windows / BUSY around reset | ✅ modelled (0069), defaults unchanged |
@@ -71,6 +71,7 @@ error).
 |---|---|
 | library-browse2 (re-queued from batch 5) | **0092**: FAT16 test-card builder whose output is verified by parsing it back, plus browse-gate thresholds pinned to the sector counts 0084 measured. Arrived as `pytest`-style functions invisible to the repo's unittest gate — ported to `TestCase`, pristine check made skippable, BPB geometry test added |
 | inkmod-cause2 | **0093 + 0096**: root-cause report, 61 tests, isolated QEMU RTC-register/IRQ experiment; QTest PASS. Explicit `SLP_REJECT` gives 2 frames then guest `abort()`, *not* a full inkMOD boot fix |
+| RTC deep-wakeup follow-up | **0097**: reproduces expected ESP-IDF `esp_deep_sleep_start` abort on SLP_REJECT; new host-triggered digital-reset hook yields ROM `rst:0x5 (DSLEEP)` and **3 native inkMOD EPD frames** without panic, but repeated I²C errors. QTest PASS; experiment remains off the 26-patch live chain |
 | wifi-narrow | **0094**: private 0081 narrow-stub binary `ee218cb7…` built, boot-matrix results unchanged across six flashes; candidate **not** applied to the live kernel |
 | nav-acceptance | **0095**: six native CrossPoint transitions passed with per-frame SHA gates; negative runs correctly rejected wrong starting frame and corrupt expected SHA; full guest I2C consumption acceptance remains unverified |
 | panel-support | No new accepted output from batch-6 lane |
