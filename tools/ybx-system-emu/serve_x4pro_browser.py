@@ -174,6 +174,10 @@ strong{color:#161615}
 code{font-size:12px;word-break:break-word}
 button{background:#242421;color:#fff;border:0;border-radius:6px;padding:11px 13px;font-size:13px;cursor:pointer}
 button:disabled{opacity:.45;cursor:default}
+#power{touch-action:none;user-select:none;-webkit-user-select:none;width:100%;
+background:#f9f8f2;color:#171715;border:1px solid #85847c;font-weight:700}
+#power.is-held{background:#b5b1a6;transform:translateY(1px)}
+#powerbox small{margin:4px 0 0}
 h2{font-size:15px;margin:20px 0 6px}
 select{width:100%;padding:9px;border-radius:6px;border:1px solid #a8a79e;font-size:13px;background:#fff;color:#171715}
 .romerror{color:#8c2f2f;font-size:13px}
@@ -193,6 +197,13 @@ not an HTML mockup. Tap directly on the reader screen to send a
 <p id="metrics"><small>BUSY telemetry: loading…</small></p>
 <button id="refresh">Refresh display</button>
 <button id="reboot">Restart virtual reader</button>
+<div id="powerbox" hidden>
+<h2>Virtual hardware key</h2>
+<button id="power" type="button" aria-label="Hold virtual Power key">Hold Power</button>
+<small>Experimental X4 Pro GPIO3 / RTC EXT1. Hold the virtual key;
+release it to finish. Safety limit: 1.2 seconds per press. This is not
+a physical reader and cannot emulate battery or real sleep current.</small>
+</div>
 <h2>Guest ROM</h2>
 <p><select id="romlist" aria-label="Candidate ROM files in --rom-dir">
 <option value="">Loading ROM list…</option></select></p>
@@ -224,6 +235,7 @@ the page only claims what the frame counter actually shows.</small>
 const img=document.getElementById('screen'),status=document.getElementById('status');
 const info=document.getElementById('info'),metrics=document.getElementById('metrics');
 const refresh=document.getElementById('refresh'),reboot=document.getElementById('reboot');
+const powerBox=document.getElementById('powerbox'),power=document.getElementById('power');
 const romList=document.getElementById('romlist'),loadRom=document.getElementById('loadrom');
 const romActive=document.getElementById('romactive'),romError=document.getElementById('romerror');
 const fwList=document.getElementById('fwlist'),loadFw=document.getElementById('loadfw');
@@ -231,12 +243,72 @@ const fwActive=document.getElementById('fwactive'),fwError=document.getElementBy
 const uartBox=document.getElementById('uart'),uartInfo=document.getElementById('uartinfo');
 let ready=false,lastFrame=-1,busy=false,ticks=0,romLoaded=false,romBusy=false;
 let fwLoaded=false,fwBusy=false;
+let powerAvailable=false,powerDown=false,powerChain=Promise.resolve();
+function releasePower(){
+ if(!powerDown)return;
+ powerDown=false;power.classList.remove('is-held');
+ queuePower(false);
+}
+function queuePower(pressed){
+ // Keep release behind press even when quick taps overlap async HTTP.
+ // The server also auto-releases independently of browser state.
+ powerChain=powerChain.catch(()=>{}).then(async()=>{
+   const response=await fetch('/api/power',{method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({pressed:pressed}),keepalive:!pressed});
+   const result=await response.json();
+   if(!response.ok)throw new Error(result.error||'Virtual Power request failed');
+   return result;
+ });
+ powerChain.catch(e=>{status.textContent='Virtual Power failed: '+e.message;
+                     powerDown=false;power.classList.remove('is-held');});
+ return powerChain;
+}
+function pressPower(ev){
+ if(!powerAvailable||powerDown)return;
+ if(ev&&ev.type==='pointerdown'&&ev.button!==0)return;
+ if(ev)ev.preventDefault();
+ powerDown=true;power.classList.add('is-held');
+ if(ev&&ev.pointerId!==undefined){
+   try{power.setPointerCapture(ev.pointerId)}catch(e){}
+ }
+ status.textContent='Virtual POWER → GPIO3 LOW (RTC EXT1 only if guest armed)';
+ queuePower(true);
+}
+power.addEventListener('pointerdown',pressPower);
+for(const name of ['pointerup','pointercancel','lostpointercapture']){
+ power.addEventListener(name,releasePower);
+}
+power.addEventListener('keydown',ev=>{
+ if((ev.key===' '||ev.key==='Enter')&&!ev.repeat)pressPower(ev);
+});
+power.addEventListener('keyup',ev=>{
+ if(ev.key===' '||ev.key==='Enter')releasePower();
+});
+window.addEventListener('blur',releasePower);
+document.addEventListener('visibilitychange',()=>{
+ if(document.hidden)releasePower();
+});
+window.addEventListener('pagehide',()=>{
+ if(powerDown){
+   releasePower();
+   // Best effort on a terminating page; the server-side watchdog is
+   // authoritative even when neither this nor fetch gets delivered.
+   if(navigator.sendBeacon){
+     navigator.sendBeacon('/api/power',new Blob(
+       [JSON.stringify({pressed:false})],{type:'application/json'}));
+   }
+ }
+});
 async function poll(){
  try{
    const response=await fetch('/api/state',{cache:'no-store'});
    const s=await response.json();
    if(!response.ok)throw new Error(s.error||'QEMU read failed');
    ready=Boolean(s.ready);
+   powerAvailable=Boolean(s.power&&s.power.available);
+   powerBox.hidden=!powerAvailable;
+   power.disabled=!powerAvailable;
    if(ready){status.textContent='Ready — tap the display';}
    else if(s.boot_failed){
      status.textContent='The guest did not boot from this ROM (0 frames after '
@@ -360,6 +432,7 @@ img.addEventListener('click',async function(ev){
 refresh.addEventListener('click',poll);
 reboot.addEventListener('click',async function(){
  if(busy || !confirm('Restart the virtual X4 Pro? Unsaved guest state may be lost.'))return;
+ releasePower();await powerChain.catch(()=>{});
  busy=true;reboot.disabled=true;status.textContent='Restarting virtual device…';
  try{
    const response=await fetch('/api/reboot',{method:'POST'});
@@ -371,6 +444,7 @@ reboot.addEventListener('click',async function(){
 });
 loadRom.addEventListener('click',async function(){
  if(romBusy||!romList.value)return;
+ releasePower();await powerChain.catch(()=>{});
  romBusy=true;loadRom.disabled=true;romError.hidden=true;
  status.textContent='Loading ROM '+romList.value+'…';
  try{
@@ -389,6 +463,7 @@ loadRom.addEventListener('click',async function(){
 });
 loadFw.addEventListener('click',async function(){
  if(fwBusy||!fwList.value)return;
+ releasePower();await powerChain.catch(()=>{});
  fwBusy=true;loadFw.disabled=true;fwError.hidden=true;
  status.textContent='Loading firmware '+fwList.value+'…';
  try{
@@ -451,6 +526,8 @@ class FactoryX4Pro:
     FW_MAX_HASH_BYTES = 64 * 1024 * 1024
     FW_FLASH_FILENAME_IN_WORKDIR = "flash.bin"
     UART_TAIL_MAX = 16384
+    POWER_MAX_HOLD_SECONDS = 1.2
+    POWER_QOM_PROPERTY = "ybx-x4pro-power-button-pressed"
     FW_SD_FILENAME_IN_WORKDIR = "sd.img"
 
     def __init__(self, args):
@@ -472,6 +549,10 @@ class FactoryX4Pro:
         self.firmware_sha = sha256_file(Path(args.flash),
                                         self.FW_MAX_HASH_BYTES)
         self.qemu_bin = args.qemu_bin
+        self.power_enabled = bool(getattr(args, "enable_power_button", False))
+        self.power_pressed = False
+        self.power_generation = 0
+        self.power_timer = None
         self.lock = threading.RLock()
         self.tap_lock = threading.Lock()
         self.tap_slots = threading.BoundedSemaphore(self.tap_queue_depth)
@@ -518,6 +599,12 @@ class FactoryX4Pro:
            stderr=self.qemu_log)
         try:
             self.client, self.reader, self.qmp = qmp_connect(sock)
+            if self.power_enabled:
+                probe = self.qmp("qom-get", {"path": self.QOM_PATH,
+                                             "property": self.POWER_QOM_PROPERTY})
+                if "return" not in probe or not isinstance(probe["return"], bool):
+                    raise RuntimeError("Experimental QEMU lacks virtual X4 Pro "
+                                       "Power GPIO3; refusing --enable-power-button")
         except Exception:
             self._stop_process()
             raise
@@ -541,10 +628,95 @@ class FactoryX4Pro:
 
     def _relaunch(self):
         """Replace a dead guest process inside the same server session."""
+        self._reset_power_state_locked()
         self._stop_process()
         self.client.close()
         self._launch()
         self._reset_frame_cache()
+
+    def power_status(self):
+        return {"available": bool(getattr(self, "power_enabled", False)),
+                "pressed": bool(getattr(self, "power_pressed", False)),
+                "max_hold_ms": int(self.POWER_MAX_HOLD_SECONDS * 1000),
+                "virtual_only": True}
+
+    def _reset_power_state_locked(self):
+        """Forget a button session only when terminating/replacing QEMU."""
+        self.power_generation = getattr(self, "power_generation", 0) + 1
+        timer = getattr(self, "power_timer", None)
+        self.power_timer = None
+        self.power_pressed = False
+        if timer is not None:
+            timer.cancel()
+
+    def _set_power_locked(self, pressed):
+        response = self.qmp("qom-set", {"path": self.QOM_PATH,
+                                        "property": self.POWER_QOM_PROPERTY,
+                                        "value": pressed})
+        if "return" not in response:
+            raise RuntimeError("QEMU virtual Power GPIO3 rejected input: "
+                               + str(response.get("error", response)))
+
+    def _release_power_locked(self):
+        if not getattr(self, "power_pressed", False):
+            return
+        self._reset_power_state_locked()
+        if self.process is None or self.process.poll() is not None:
+            return  # no process left holding a GPIO level
+        try:
+            self._set_power_locked(False)
+        except (OSError, RuntimeError, ValueError):
+            # An unanswered QMP release is not proof of a released button.
+            # Kill the possibly held guest and relaunch with clean GPIO inputs.
+            self._relaunch()
+            raise GuestMissingError("Virtual Power release failed; "
+                                    "QEMU guest was restarted for safety")
+
+    def _power_watchdog(self, generation):
+        with self.lock:
+            if generation != self.power_generation or not self.power_pressed:
+                return
+            try:
+                self._release_power_locked()
+            except (GuestError, OSError, RuntimeError):
+                # _release_power_locked already attempted a hard recovery.
+                pass
+
+    def power_update(self, pressed):
+        """Opt-in button input; server watchdog bounds every held session.
+
+        Browser network/disconnect/visibility events are advisory only: no
+        HTTP client can hold POWER indefinitely by dropping the release POST.
+        A repeated press never renews the original 1.2-second deadline.
+        """
+        if not isinstance(pressed, bool):
+            raise BadRequestError("pressed must be a boolean")
+        with self.lock:
+            if not self.power_enabled:
+                raise BadRequestError("Virtual Power is disabled on this server")
+            if self.process is None or self.process.poll() is not None:
+                self._reset_power_state_locked()
+                raise GuestMissingError("QEMU process is not running")
+            if not pressed:
+                self._release_power_locked()
+            elif not self.power_pressed:
+                try:
+                    self._set_power_locked(True)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    # Error while pressing is ambiguous; discard the guest
+                    # before it can remain pressed indefinitely.
+                    self._relaunch()
+                    raise GuestMissingError("Virtual Power press failed; "
+                                            "QEMU guest restarted") from exc
+                self.power_pressed = True
+                self.power_generation += 1
+                timer = threading.Timer(self.POWER_MAX_HOLD_SECONDS,
+                                        self._power_watchdog,
+                                        args=(self.power_generation,))
+                timer.daemon = True
+                self.power_timer = timer
+                timer.start()
+            return self.power_status()
 
     def _get(self, property):
         result = self.qmp("qom-get",{"path":self.QOM_PATH,
@@ -584,7 +756,8 @@ class FactoryX4Pro:
                                       == "factory-flash",
                     "firmware":self.firmware_info(),
                     "rom":self.rom_info(),
-                    "physical_device":False}
+                    "physical_device":False,
+                    "power":self.power_status()}
 
     def telemetry(self):
         """Read-only EPD BUSY/frame counters from QOM; never writes anything.
@@ -739,6 +912,7 @@ class FactoryX4Pro:
         self._begin_action()
         try:
             with self.lock:
+                self._release_power_locked()
                 self._clear_touch_state_quietly()
                 self._stop_process()
                 if self.client is not None:
@@ -910,6 +1084,7 @@ class FactoryX4Pro:
         self._begin_action()
         try:
             with self.lock:
+                self._release_power_locked()
                 self._clear_touch_state_quietly()
                 self._stop_process()
                 if self.client is not None:
@@ -1007,6 +1182,7 @@ class FactoryX4Pro:
         self._begin_action()
         try:
             with self.lock:
+                self._release_power_locked()
                 if self.process.poll() is not None:
                     self._relaunch()
                     return
@@ -1041,6 +1217,8 @@ class FactoryX4Pro:
             self._end_action()
 
     def close(self):
+        with self.lock:
+            self._reset_power_state_locked()
         if self.client is not None:
             self.client.close()
         self._stop_process()
@@ -1202,7 +1380,39 @@ def make_handler(emu):
             self.response_json(200,{"accepted":True,"action":"firmware-switch",
                                     **result})
 
+        def handle_power(self):
+            try:
+                if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+                    raise BadRequestError("Use application/json")
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    raise BadRequestError("Invalid Content-Length") from None
+                if not 0 < size <= 64:
+                    raise BadRequestError("Invalid Power payload size")
+                try:
+                    payload = json.loads(self.rfile.read(size))
+                except (ValueError, UnicodeDecodeError):
+                    raise BadRequestError("Invalid Power JSON") from None
+                if not isinstance(payload, dict) or set(payload) != {"pressed"} \
+                        or type(payload["pressed"]) is not bool:
+                    raise BadRequestError("Power payload must be {pressed: boolean}")
+                result = emu.power_update(payload["pressed"])
+            except BadRequestError as exc:
+                self.response_json(400, {"type": "bad-request", "error": str(exc)})
+                return
+            except GuestError as exc:
+                self.guest_failure(exc)
+                return
+            except (RuntimeError, OSError, ValueError) as exc:
+                self.response_json(503, {"type": "guest-error", "error": str(exc)})
+                return
+            self.response_json(200, {"accepted": True, "action": "virtual-power", **result})
+
         def do_POST(self):
+            if self.path == "/api/power":
+                self.handle_power()
+                return
             if self.path=="/api/reboot":
                 try:
                     emu.reboot()
@@ -1266,6 +1476,9 @@ def main():
                         "defaults to the directory of --flash")
     p.add_argument("--host",default="127.0.0.1")
     p.add_argument("--port",type=int,default=8784)
+    p.add_argument("--enable-power-button",action="store_true",
+                   help="experimental X4 Pro Power GPIO3 input; requires "
+                        "patched QEMU and private/trusted localhost")
     args=p.parse_args()
     for attr in ("qemu_bin","rom","flash","sd_image"):
         setattr(args,attr,getattr(args,attr).resolve(strict=True))
