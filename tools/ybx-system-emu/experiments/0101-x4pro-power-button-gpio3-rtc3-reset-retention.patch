@@ -1,0 +1,108 @@
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -33,6 +33,12 @@
+     uint32_t input_hi;
+     /* Board-specified, opt-in passive pullups for active-LOW buttons. */
+     uint32_t input_pullup_lo;
++    /* External board-driven input levels survive digital CPU/GPIO resets;
++     * a pressed power key does not spontaneously rise when the CPU resets. */
++    uint32_t external_known_lo;
++    uint32_t external_known_hi;
++    uint32_t external_high_lo;
++    uint32_t external_high_hi;
+     uint32_t status_lo;
+     uint32_t status_hi;
+     uint32_t pin_cfg[ESP32_GPIO_PINS];
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -99,6 +99,18 @@
+     uint32_t mask = 1U << (n < 32 ? n : n - 32);
+     bool old_high = !!(*word & mask);
+     bool high = !!level;
++    if (s->emulate_outputs) {
++        uint32_t *known = n < 32 ? &s->external_known_lo :
++                                   &s->external_known_hi;
++        uint32_t *drive = n < 32 ? &s->external_high_lo :
++                                   &s->external_high_hi;
++        *known |= mask;
++        if (high) {
++            *drive |= mask;
++        } else {
++            *drive &= ~mask;
++        }
++    }
+     if (level) {
+         *word |= mask;
+     } else {
+@@ -210,8 +222,9 @@
+     Esp32GpioState *s = ESP32_GPIO(obj);
+     s->out_lo = s->out_hi = 0;
+     s->enable_lo = s->enable_hi = 0;
+-    s->input_lo = s->input_pullup_lo;
+-    s->input_hi = 0;
++    s->input_lo = (s->input_pullup_lo & ~s->external_known_lo) |
++                  (s->external_high_lo & s->external_known_lo);
++    s->input_hi = s->external_high_hi & s->external_known_hi;
+     s->status_lo = s->status_hi = 0;
+     s->irq_level = s->irq_ack_count = s->pin6_edge_count = 0;
+     memset(s->pin_cfg, 0, sizeof(s->pin_cfg));
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -129,6 +129,8 @@
+     Esp32I2CState i2c[ESP32S3_I2C_COUNT];
+     bool ybx_x4pro_i2c;
+     bool ybx_x4pro_gt911;
++    bool ybx_x4pro_power_button_pressed;
++    uint32_t ybx_x4pro_power_button_changes;
+     bool ybx_x4pro_sd_power;
+     bool ybx_x4pro_spi2;
+     bool ybx_x4pro_epd;
+@@ -646,6 +648,35 @@
+ 
+ 
+ 
++/* Hardware-confirmed X4 Pro: POWER is active-low GPIO3 / RTCIO3.
++ * One virtual board-level electrical level fans out to digital GPIO and RTC,
++ * never bypassing the guest EXT1 selection or directly resetting the CPU. */
++static bool esp32s3_x4pro_power_button_get(Object *obj, Error **errp)
++{
++    return ESP32S3_SOC(obj)->ybx_x4pro_power_button_pressed;
++}
++
++static void esp32s3_x4pro_power_button_set(Object *obj, bool pressed,
++                                          Error **errp)
++{
++    Esp32s3SocState *s = ESP32S3_SOC(obj);
++    if (!s->ybx_x4pro_gt911) {
++        error_setg(errp, "X4 Pro power button requires the X4 Pro board profile");
++        return;
++    }
++    if (s->ybx_x4pro_power_button_pressed == pressed &&
++        s->ybx_x4pro_power_button_changes != 0) {
++        return;
++    }
++    s->ybx_x4pro_power_button_pressed = pressed;
++    s->ybx_x4pro_power_button_changes++;
++    int level = pressed ? 0 : 1; /* INPUT_PULLUP, active-LOW */
++    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->gpio),
++                                       "ybx.gpio-input", 3), level);
++    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->rtc_cntl),
++                                       ESP32S3_RTC_EXT1_PAD_IN, 3), level);
++}
++
+ static void esp32s3_soc_init(Object *obj)
+ {
+     Esp32s3SocState *s = ESP32S3_SOC(obj);
+@@ -709,6 +740,12 @@
+     object_initialize_child(obj, "intmatrix", &s->intmatrix, TYPE_ESP32S3_INTMATRIX);
+ 
+     object_initialize_child(obj, "rtc_cntl", &s->rtc_cntl, TYPE_ESP32S3_RTC_CNTL);
++    object_property_add_bool(obj, "ybx-x4pro-power-button-pressed",
++                             esp32s3_x4pro_power_button_get,
++                             esp32s3_x4pro_power_button_set);
++    object_property_add_uint32_ptr(obj, "ybx-x4pro-power-button-changes",
++                                   &s->ybx_x4pro_power_button_changes,
++                                   OBJ_PROP_FLAG_READ);
+ 
+     qdev_init_gpio_in_named(DEVICE(s), esp32s3_dig_reset,  ESP32S3_RTC_DIG_RESET_GPIO, 1);
+     qdev_init_gpio_in_named(DEVICE(s), esp32s3_cpu_reset,  ESP32S3_RTC_CPU_RESET_GPIO, ESP32S3_CPU_COUNT);
