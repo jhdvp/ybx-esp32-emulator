@@ -13,7 +13,7 @@ reports; each row links to the evidence.
 | Live binary SHA-256 | `f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236` |
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
 | Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
-| Host tests | 832 tests, 10 skipped (with the companion firmware artifacts present) |
+| Host tests | 896 tests, 10 skipped (with the companion firmware artifacts present, verified 2026-11-01) |
 | Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
@@ -66,13 +66,14 @@ error).
 | repro-build-e2e | **0072**: clean-room build executed end to end |
 | boot-matrix | **0073**: measured boot table tool |
 
-### Batch 6 — 2026-11-01, in flight
+### Batch 6 — 2026-11-01, research and integration status
 | Lane | Result |
 |---|---|
 | library-browse2 (re-queued from batch 5) | **0092**: FAT16 test-card builder whose output is verified by parsing it back, plus browse-gate thresholds pinned to the sector counts 0084 measured. Arrived as `pytest`-style functions invisible to the repo's unittest gate — ported to `TestCase`, pristine check made skippable, BPB geometry test added |
-| inkmod-cause2 | running — sleep/IPC stop point turned into a ranked, falsifiable hypothesis list |
-| wifi-narrow | running — builds 0081's narrowing patch in a private tree, re-runs the boot matrix on both kernels |
-| nav-acceptance, panel-support | queued behind the running lanes |
+| inkmod-cause2 | **0093 + 0096**: root-cause report, 61 tests, isolated QEMU RTC-register/IRQ experiment; QTest PASS. Explicit `SLP_REJECT` gives 2 frames then guest `abort()`, *not* a full inkMOD boot fix |
+| wifi-narrow | **0094**: private 0081 narrow-stub binary `ee218cb7…` built, boot-matrix results unchanged across six flashes; candidate **not** applied to the live kernel |
+| nav-acceptance | **0095**: six native CrossPoint transitions passed with per-frame SHA gates; negative runs correctly rejected wrong starting frame and corrupt expected SHA; full guest I2C consumption acceptance remains unverified |
+| panel-support | No new accepted output from batch-6 lane |
 
 ### Batch 5 — twelve lanes (2026-10-31 → 11-01)
 | Lane | Result |
@@ -107,12 +108,14 @@ error).
    changes nothing observable at boot for CrossPoint or the factory image, so
    the earlier "the stub hangs the guest earlier" note was wrong and is
    retired here. No scan, association, address, DHCP or TLS exists.
-2. **inkMOD starts but paints nothing.** 0081 established that the "only ROM
-   lines" signature belongs to inkMOD, not to the radio stub, and
-   `probe_x4pro_inkmod_trace.py` pinned the stop point: CPU0 waits for a
-   cross-core IPC finish command that never arrives while CPU1 polls the RTC
-   sleep bits. That is a signature, not a fix — the register model that should
-   answer it is not built yet (batch-6 `inkmod-cause2`).
+2. **inkMOD does not paint on the deployed kernel.** 0093 showed that CPU1
+   polls `RTC_CNTL_INT_RAW` at `0x60008044`, unimplemented in the shipped S3
+   RTC model. The 0096 isolated prototype correctly implements masked status,
+   W1C and explicit QMP RTC events (39 live QTest operations PASS); its
+   `SLP_REJECT` test produces 2 frames / 50 commands and then a firmware
+   `abort()` at PC `0x40377508`, while `SLP_WAKEUP` produces no frame.
+   Neither signal represents an implemented physical EXT1 wake source. The
+   0096 patch is **NOT** in the audited 26-patch chain or deployed to 8784.
 3. **The 0081 narrowing patch is unapplied.** The shipped stub still claims
    4 KiB windows; the tighter measured ranges need their own build, boot
    matrix and acceptance-SHA re-check before they can enter the chain.
