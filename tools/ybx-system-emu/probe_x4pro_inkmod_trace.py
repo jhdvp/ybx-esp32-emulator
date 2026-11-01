@@ -408,6 +408,7 @@ def probe(args) -> dict:
     error = None
     timeline: list[dict] = []
     static: dict = {}
+    rtc_injection = None
     try:
         client, reader, qmp = qmp_connect(sock)
         period = max(0.05, args.sample_ms / 1000.0)
@@ -417,6 +418,19 @@ def probe(args) -> dict:
             if elapsed < next_sample:
                 time.sleep(next_sample - elapsed)
             elapsed = time.monotonic() - started
+            # Explicit test input only. Never advertise this as simulated EXT1
+            # hardware, and do not synthesize a wakeup without --inject-rtc.
+            if args.inject_rtc and rtc_injection is None:
+                requests = qom_get(qmp, "/machine/soc", "ybx-rtc-sleep-requests")
+                if requests >= 1:
+                    result = qmp("qom-set", {"path": "/machine/soc",
+                                             "property": "ybx-rtc-inject-" + args.inject_rtc,
+                                             "value": True})
+                    if "return" not in result:
+                        raise RuntimeError(f"RTC injection rejected: {result}")
+                    rtc_injection = {"event": args.inject_rtc,
+                                     "at_seconds": round(elapsed, 3),
+                                     "sleep_requests_before": requests}
             cpu0 = sample_cpu(qmp, 0)
             cpu1 = sample_cpu(qmp, 1)
             timeline.append({
@@ -499,6 +513,7 @@ def probe(args) -> dict:
         "timeline": timeline,
     }
     report.update(static)
+    report["rtc_injection"] = rtc_injection
     if args.exec_trace:
         report["exec_trace"] = summarize_exec_log(work / "exec.log")
     report["verdict"] = classify_outcome(timeline, epd, rtc, flags,
@@ -525,6 +540,9 @@ def main() -> int:
     parser.add_argument("--machine", default=MACHINE)
     parser.add_argument("--stack-words", type=int, default=64,
                         help="words dumped at each CPU A1 after sampling")
+    parser.add_argument("--inject-rtc", choices=("wakeup", "reject"),
+                        help="EXPLICIT test-only QMP RTC event after first sleep request; "
+                             "not a simulated physical wake source")
     parser.add_argument("--exec-trace", action="store_true",
                         help="private-tree -d exec restricted to inkMOD ranges")
     args = parser.parse_args()
