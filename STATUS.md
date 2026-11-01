@@ -13,7 +13,7 @@ reports; each row links to the evidence.
 | Live binary SHA-256 | `f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236` |
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
 | Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
-| Host tests | 947 tests, 10 skipped (with the companion firmware artifacts present, verified 2026-11-02) |
+| Host tests | 950 tests, 10 skipped (with the companion firmware artifacts present, verified 2026-11-02) |
 | Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
@@ -78,6 +78,7 @@ error).
 | X4 Pro Power / RTC routing | **0101**: hardware profile confirms active-LOW Power=GPIO3. Virtual board Power input fans out to digital GPIO3 and RTCIO3; real guest wakes `rst:0x5 (DSLEEP)`, EXT1 status `0x8`, 5 EPD frames, no panic/I²C errors. External input retains LOW through digital reset. Compiled QTests for Power, EXT1, GT911 and touch all pass; stable 8784 unchanged |
 | Browser Power and composition | **0102**: opt-in private `127.0.0.1:8794` browser exposes X4 Pro Power GPIO3, 1.2-second server watchdog and fail-safe relaunch on QMP release failure. Original inkMOD wakes `rst:0x5 (DSLEEP)` and navigates Settings → Controls → Reader with exact SSD1677 SHA checks. Offline source composition: 31 files identical after all six 0096–0101 research patches. The 0101 binary SHA is corrected; **clean-room binary rebuild is not complete**, stable 8784 untouched |
 | 0103 clean-room binary | **PASS**: offline QEMU rebuilt from pinned QEMU/26-patch base + experimental 0096–0101, exact Git SHA-verified keycodemapdb, softfloat/testfloat. All 1544 Ninja steps complete; binary **byte-identical** to accepted experimental 0101 SHA `7b729fba…5e2accc`. Fresh binary QTests Power, RTC EXT1, GT911, touch all PASS; native inkMOD 0 wakes/frames before Power and 1 DSLEEP wake/5 frames after Power; Factory and CrossPoint original SHA unchanged. **8784 not touched** |
+| 0104 full release qualification | Independent native Factory GUI 4/4 with guest GT911 I²C verified; CrossPoint browser tours 6/6 + 2/2 browse + 2/2 library + 2/2 settings (correct prior selected state), frame SHAs matched. Five repeat reboots preserve original guest SD byte-for-byte. FAT16 test-card builder LFN checksum/first-cluster corruption repaired; fsck.fat passes, guest indexes real test books and opens EPUB/cache, then 3 reboots preserve it without FAT/MBR/source-file corruption. Three *independent fresh inkMOD boots* each arm RTC EXT1 and wake via virtual Power to the same Home SHA with no panic/I²C error; separate from continuous in-session sleep cycles |
 | wifi-narrow | **0094**: private 0081 narrow-stub binary `ee218cb7…` built, boot-matrix results unchanged across six flashes; candidate **not** applied to the live kernel |
 | nav-acceptance | **0095**: six native CrossPoint transitions passed with per-frame SHA gates; negative runs correctly rejected wrong starting frame and corrupt expected SHA; full guest I2C consumption acceptance remains unverified |
 | panel-support | No new accepted output from batch-6 lane |

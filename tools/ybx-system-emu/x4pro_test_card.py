@@ -184,9 +184,13 @@ def _dos_stamps(date=STAMP_DATE, time_=STAMP_TIME):
 
 
 def _checksum(name11: bytes) -> int:
+    """VFAT long-name checksum is an 8-bit rotate-right accumulation."""
+    if len(name11) != 11:
+        raise ValueError("short FAT name must be exactly 11 bytes")
     ck = 0
     for c in name11:
-        ck = ((ck >> 1) + ((ck & 1) << 15) + c) & 0xFFFF
+        ck = (((ck & 1) << 7) | (ck >> 1))
+        ck = (ck + c) & 0xFF
     return ck
 
 
@@ -216,10 +220,12 @@ def _short_name(name: str, taken: set[bytes]) -> bytes:
 
 def _lfn_records(name: str, short11: bytes) -> bytes:
     """LFN slots for `name`, highest slot first, matching the short record."""
-    units = len(name)
-    pad_to = ((units + 12) // 13) * 13
-    payload = name.encode("utf-16-le") + b"\x00\x00" + b"\xff\xfe" * (pad_to - units - 1)
-    chunks = [payload[i:i + 26] for i in range(0, len(payload), 26)]
+    encoded = name.encode("utf-16-le")
+    units = len(encoded) // 2  # UTF-16 code units, NOT Python code points
+    if units % 13:
+        encoded += b"\x00\x00"  # terminated unless final slot fills exactly
+    encoded += b"\xff\xff" * ((-len(encoded) // 2) % 13)
+    chunks = [encoded[i:i + 26] for i in range(0, len(encoded), 26)]
     ck = _checksum(short11)
     out = []
     for index, chunk in enumerate(chunks):
@@ -230,8 +236,10 @@ def _lfn_records(name: str, short11: bytes) -> bytes:
         e[0] = seq
         e[1:11] = chunk[0:10]
         e[11] = 0x0F
+        e[12] = 0  # VFAT type must be zero
+        e[13] = ck  # VFAT checksum is ONE BYTE at offset 13
         e[14:26] = chunk[10:22]
-        struct.pack_into("<H", e, 26, ck)
+        # First cluster (26:28) must be zero for every LFN record.
         e[28:32] = chunk[22:26]
         out.append(bytes(e))
     return b"".join(out[::-1])     # stored highest-numbered slot first
@@ -273,7 +281,7 @@ def _dot(name: bytes, cluster: int, parent: int, time_f: int, date_f: int) -> by
     return bytes(e)
 
 
-def build_fat16(files: list[tuple[str, bytes]], total_sectors: int = 32264,
+def build_fat16(files: list[tuple[str, bytes]], total_sectors: int = 131072,
                 label: bytes = VOLUME_LABEL) -> bytes:
     """Render a FAT16 superfloppy holding `files` (see test_library_files)."""
     time_f, date_f = _dos_stamps()
