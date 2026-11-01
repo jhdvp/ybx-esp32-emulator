@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/host-macOS%20%2B%20Docker-586D70?style=flat-square)
 ![Guest](https://img.shields.io/badge/guest-ESP32--S3%20%2F%20ESP32--C3-567965?style=flat-square)
 [![Host checks](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml/badge.svg)](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml)
-![Tests](https://img.shields.io/badge/local%20tests-937%20pass%20%7C%2010%20skip-567965?style=flat-square)
+![Tests](https://img.shields.io/badge/local%20tests-940%20pass%20%7C%2010%20skip-567965?style=flat-square)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20GPL--2.0%20patches-567965?style=flat-square)](LICENSING.md)
 
 [**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap) · [**Status snapshot**](STATUS.md)
@@ -69,12 +69,13 @@
 | X4 Pro Power → RTC EXT1 | 🟡 **Experimental (0101)** | The hardware-confirmed **GPIO3 active-LOW Power button** is modelled as a virtual board input feeding both normal digital GPIO and RTCIO3. Original inkMOD wakes after this virtual button press, with correct DSLEEP status and no I²C errors; reset retains held external LOW. Physical key testing, other RTC wake sources and live 8784 deployment remain open ([0101](tools/ybx-system-emu/experiments/0101-x4pro-power-gpio3-rtc-ext1-20261101.md)) |
 | Browser virtual Power key | 🟡 **Opt-in experimental (0102)** | Hold-to-press virtual X4 Pro GPIO3 Power in private 8794; a 1.2-second server watchdog releases it even on browser disconnect. Original inkMOD boots from DSLEEP and responds to GT911 navigation with exact SSD1677 SHA gates. Stable 8784 and its binary are **unchanged** ([0102](tools/ybx-system-emu/experiments/0102-browser-power-http-acceptance-20261101.md)) |
 | X4 Pro experimental QEMU binary | 🟢 **Byte-for-byte reproducible (0103)** | Independent **offline** build from pinned QEMU, all 0096–0101 patches and pinned Git subprojects produces the **identical SHA-256** `7b729fba…5e2accc`. New binary passes original inkMOD Power / DSLEEP, factory, CrossPoint and four QTests. No live 8784 promotion ([0103](tools/ybx-system-emu/experiments/0103-offline-clean-room-binary-reproducibility-20261102.md)) |
+| VFAT test library & real guest SD | 🟢 **0104 verified** | Fixed host test-card builder: 8-bit LFN checksum, zero reserved cluster and exact 128MiB FAT16 geometry. Independent `fsck.fat -n` passes; original Factory indexes real books, CrossPoint opens an EPUB and caches files; SD remains consistent across three reboots. Private runner only ([0104](tools/ybx-system-emu/experiments/0104-real-guest-vfat-sd-navigation-20261102.md)) |
 | Wi-Fi / 802.11 MAC + PHY | 🔴 **Not emulated** | Factory register accesses are pinned and an opt-in non-fake stub is proposed ([0060](tools/ybx-system-emu/experiments/0060-batch3-wifi-radio.md)); no scan, association, address, frame or TLS is produced |
 | TLS and cloud services | ⚪ **Unverified** | No verified end-to-end guest TLS session; do not infer it from host networking |
 | Power / sleep / waveform timing | 🟢 **Modelled** | Host lifecycle models and telemetry, not physical E-Ink fidelity; split power/waveform BUSY windows, a real deep-sleep state and BUSY around reset are in the running kernel ([0069](tools/ybx-system-emu/experiments/0069-epd-waveform-apply-20261031.md)) |
 | X3 / X4 / other panels | 🟡 **Early bring-up** | CPU milestones exist; full interactive device coverage is not claimed |
 
-**Evidence:** with the companion CrossPoint firmware and the local firmware artifacts present: 947 tests (937 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
+**Evidence:** with the companion CrossPoint firmware and the local firmware artifacts present: 950 tests (940 passed, 10 skipped). These counts describe verified local runs, not hardware-complete emulation. The workflow badge above reports independent GitHub Actions status. Every claim made by the twelve research agents that built this emulator was re-checked against code, QTest and the running factory guest in [0052](tools/ybx-system-emu/experiments/0052-six-agent-verification-pass-20261030.md).
 
 ## How it works
 

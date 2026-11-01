@@ -65,6 +65,43 @@ class TestCardBuilder(unittest.TestCase):
         self.assertEqual(verdict["pristine_sha256"], before)
 
 
+class TestVfatLongNames(unittest.TestCase):
+    """Independent FAT/VFAT invariants: the parser alone used to miss these."""
+
+    def test_checksum_is_eight_bit_and_at_byte_13(self):
+        short = b"FIELD_~1   "
+        expected = 0
+        for byte in short:
+            expected = (((expected & 1) << 7) | (expected >> 1))
+            expected = (expected + byte) % 256
+        self.assertEqual(card._checksum(short), expected)
+        self.assertRaises(ValueError, card._checksum, b"bad")
+        slots = card._lfn_records("Field Notes", short)
+        self.assertEqual(len(slots), 32)
+        self.assertEqual(slots[13], expected)
+        self.assertEqual(slots[26:28], b"\x00\x00")
+        self.assertEqual(slots[11], 0x0f)
+        self.assertEqual(slots[12], 0)
+        self.assertEqual(slots[0], 0x41)
+
+    def test_exact_thirteen_utf16_units_uses_one_slot(self):
+        short = b"LONGNA~1TXT"
+        for name, expected_count in (("abcdefghijklm", 1),
+                                     ("abcdefghijklmno", 2),
+                                     ("Book📘.epub", 1)):
+            with self.subTest(name=name):
+                data = card._lfn_records(name, short)
+                self.assertEqual(len(data), expected_count * 32)
+                self.assertEqual(data[0] & 0x40, 0x40)
+                for i in range(0, len(data), 32):
+                    self.assertEqual(data[i+11], 0x0f)
+                    self.assertEqual(data[i+13], card._checksum(short))
+                    self.assertEqual(data[i+26:i+28], b"\x00\x00")
+
+    def test_guest_card_matches_full_pristine_geometry(self):
+        self.assertEqual(len(card.wrap_mbr(card.build_fat16([]))), 134217728)
+
+
 class TestBrowseGates(unittest.TestCase):
     def test_status_reports_every_gate(self):
         self.assertEqual(set(card.browse_gate_status()),
