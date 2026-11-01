@@ -21,6 +21,7 @@ experiments/0081-wifi-stub-effect-20261031.md.
 """
 from __future__ import annotations
 
+import os
 import re
 import unittest
 from pathlib import Path
@@ -30,8 +31,16 @@ from wifi_radio_inventory import FACTORY_BASELINE
 
 HERE = Path(__file__).resolve().parent
 PATCH = HERE / "experiments" / "0081-wifi-stub-overlap.patch"
-LIVE_TREE = Path("/Users/yaraslauhancharou/.local/state/ybx-emulator-"
-                 "upstream/qemu-wf-radio-20261031")
+# The QEMU checkout is local research evidence, not part of the public repo.
+# Importing this test must never fail on CI hosts without that checkout.
+LIVE_TREE = Path(os.environ.get(
+    "YBX_QEMU_ROOT",
+    str(Path.home() / ".local/state/ybx-emulator-upstream/qemu-wf-radio-20261031"),
+)).expanduser()
+LIVE_SOURCE_AVAILABLE = all((LIVE_TREE / p).is_file() for p in (
+    "hw/misc/esp32s3_wifi_stub.c",
+    "include/hw/misc/esp32s3_wifi_stub.h",
+))
 RNG_WORD = 0x6003507C
 TAP_FE_WORD = 0x60006090  # PINNED(0081): the only runtime tap hit
 STATS_BASE, STATS_SIZE = 0x60035F00, 0x20
@@ -75,8 +84,8 @@ def _reconstruct(relpath: str) -> str:
     return "\n".join(lines)
 
 
-STUB_C = _reconstruct("hw/misc/esp32s3_wifi_stub.c")
-STUB_H = _reconstruct("include/hw/misc/esp32s3_wifi_stub.h")
+STUB_C = _reconstruct("hw/misc/esp32s3_wifi_stub.c") if LIVE_SOURCE_AVAILABLE else ""
+STUB_H = _reconstruct("include/hw/misc/esp32s3_wifi_stub.h") if LIVE_SOURCE_AVAILABLE else ""
 
 WINDOW_RE = re.compile(
     r'\{\s*"(?P<name>[\w]+)",\s*(?:0x(?P<b1>[0-9a-fA-F]+)|'
@@ -98,6 +107,7 @@ def inventory_range(key: str) -> tuple[int, int]:
     return int(lo, 16), int(hi, 16)
 
 
+@unittest.skipUnless(LIVE_SOURCE_AVAILABLE, "requires YBX_QEMU_ROOT with the audited ESP32-S3 Wi-Fi stub sources")
 class TestNarrowedWindowTable(unittest.TestCase):
     def test_region_shape(self):
         # PINNED(0081): six radio windows + one stats region
@@ -150,6 +160,7 @@ class TestNarrowedWindowTable(unittest.TestCase):
         self.assertEqual(covers(RNG_WORD), [])
 
 
+@unittest.skipUnless(LIVE_SOURCE_AVAILABLE, "requires YBX_QEMU_ROOT with the audited ESP32-S3 Wi-Fi stub sources")
 class TestCatchallRemainsForEverythingElse(unittest.TestCase):
     NEVER_STUBBED = ("FE2", "BT_BB", "NRX", "BB", "SYSCON", "RTCCNTL")
 
@@ -174,6 +185,7 @@ class TestCatchallRemainsForEverythingElse(unittest.TestCase):
                 self.assertTrue(covers(addr), f"{addr:#010x} outside window")
 
 
+@unittest.skipUnless(LIVE_SOURCE_AVAILABLE, "requires YBX_QEMU_ROOT with the audited ESP32-S3 Wi-Fi stub sources")
 class TestHonestyBoundariesUnchanged(unittest.TestCase):
     def test_patch_adds_no_irq_netdev_or_default_on(self):
         for line in PATCH.read_text().splitlines():
