@@ -13,7 +13,7 @@ reports; each row links to the evidence.
 | Live binary SHA-256 | `f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236` |
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
 | Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
-| Host tests | 912 tests, 10 skipped (with the companion firmware artifacts present, verified 2026-11-01) |
+| Host tests | 916 tests, 10 skipped (with the companion firmware artifacts present, verified 2026-11-01) |
 | Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
@@ -74,6 +74,7 @@ error).
 | RTC deep-wakeup follow-up | **0097**: reproduces expected ESP-IDF `esp_deep_sleep_start` abort on SLP_REJECT; new host-triggered digital-reset hook yields ROM `rst:0x5 (DSLEEP)` and **3 native inkMOD EPD frames** without panic, but repeated I²C errors. QTest PASS; experiment remains off the 26-patch live chain |
 | GT911 short-reset follow-up | **0098**: 30 µs post-DSLEEP RESET glitch incorrectly latched GT911 not-ready and caused 1:1 I²C NACK / ESP_ERR_INVALID_STATE counts; isolated QEMU fix preserves readiness under invalid pulse. Native inkMOD: **420 I²C completions, zero NACK, three frames**, QTest 135 operations PASS; no RTC automation or inkMOD navigation verified, **not deployed to 8784** |
 | inkMOD native navigation | **0099**: original unmodified flash, one explicit QMP DSLEEP wake, then actual GT911 I²C point reads/status clears and SSD1677 changed SHA confirm Home → Browse Files, Home → Settings → Controls → Reader. Inert touches are rejected, not counted; no emulator binary promoted |
+| RTC EXT1 experimental | **0100**: guest-programmed RTC EXT1 mask `0x8` selects GPIO3, `ALL_LOW`. Test-pad LOW leads to `rst:0x5 (DSLEEP)`, EXT1 status `0x8`, three EPD frames and no I²C errors. Control without input has no wake/frames; QTest verifies wrong-pin/mode/enable negative gates. **Board GPIO3/physical-button routing still missing; 8784 unchanged** |
 | wifi-narrow | **0094**: private 0081 narrow-stub binary `ee218cb7…` built, boot-matrix results unchanged across six flashes; candidate **not** applied to the live kernel |
 | nav-acceptance | **0095**: six native CrossPoint transitions passed with per-frame SHA gates; negative runs correctly rejected wrong starting frame and corrupt expected SHA; full guest I2C consumption acceptance remains unverified |
 | panel-support | No new accepted output from batch-6 lane |
