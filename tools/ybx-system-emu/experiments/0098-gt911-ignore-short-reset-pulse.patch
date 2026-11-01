@@ -1,0 +1,28 @@
+--- a/hw/i2c/ybx_x4pro_i2c.c
++++ b/hw/i2c/ybx_x4pro_i2c.c
+@@ -340,9 +340,10 @@
+     if (!high) {
+         s->reset_low_since_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+         s->reset_low_seen = s->powered;
+-        s->ready_after_ns = INT64_MAX;
+-        s->data_ready = false;
+-        s->injected_state = 0;
++        /* LOW is effective on the I2C bus immediately, but a pulse shorter
++         * than the existing 2ms minimum is a glitch, not a valid reset.
++         * Preserve the previous ready timer/contact data until a qualified
++         * reset or an actual power cycle is observed. */
+         gt911_update_irq(s);
+     } else if (s->powered && s->reset_low_seen &&
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+@@ -351,6 +352,11 @@
+         I2C_SLAVE(s)->address = s->interrupt_high ? 0x14 : 0x5d;
+         s->ready_after_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                             50000000LL;
++        s->data_ready = false;
++        s->injected_state = 0;
++        gt911_update_irq(s);
++    } else {
++        /* Restore IRQ/readiness after a sub-minimum reset glitch. */
+         gt911_update_irq(s);
+     }
+ }

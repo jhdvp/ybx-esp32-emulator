@@ -72,6 +72,33 @@ INTMATRIX_PROPS = (
     "ybx-cpu1-from-cpu-default-route",
 )
 INKMOD_FLAGS_ADDR = 0x3fca2908
+# Read-only QOM counters from the opt-in QEMU 0098 instrumentation.
+I2C_DEBUG_PROPS = (
+    "trans-starts", "nacks", "completes", "end-detects", "irq-raises",
+    "cmd-count", "last-addr", "last-cmd", "last-int-raw", "last-int-ena",
+)
+
+
+def snapshot_i2c_debug(qmp):
+    """Count hardware events; never synthesize ACK, IRQ or I2C responses."""
+    return {
+        f"i2c{index}": {name: qom_get(qmp, f"/machine/soc/i2c{index}", "ybx-" + name)
+                         for name in I2C_DEBUG_PROPS}
+        for index in (0, 1)
+    }
+
+GT911_DEBUG_PROPS = (
+    "power-present", "ready", "master-rail-high", "touch-rail-low",
+    "reset-high", "gate-nacks", "gate-acks", "rail-transitions",
+    "reset-transitions", "ready-timer-armed", "reset-low-seen",
+    "last-reset-low-us", "qualified-reset-rises", "short-reset-rises",
+    "unarmed-reset-rises",
+)
+
+
+def snapshot_gt911_debug(qmp):
+    return {name: qom_get(qmp, "/machine/soc", "ybx-gt911-" + name)
+            for name in GT911_DEBUG_PROPS}
 INKMOD_FLAGS_WORDS = 3
 INKMOD_CONFIG_ADDR = 0x3fc99e60
 INKMOD_CONFIG_WORDS = 32
@@ -418,6 +445,8 @@ def probe(args) -> dict:
     timeline: list[dict] = []
     static: dict = {}
     rtc_injection = None
+    i2c_timeline = []
+    next_i2c_sample = 1.0
     try:
         client, reader, qmp = qmp_connect(sock)
         period = max(0.05, args.sample_ms / 1000.0)
@@ -440,6 +469,11 @@ def probe(args) -> dict:
                     rtc_injection = {"event": args.inject_rtc,
                                      "at_seconds": round(elapsed, 3),
                                      "sleep_requests_before": requests}
+            if args.i2c_telemetry and elapsed >= next_i2c_sample:
+                i2c_timeline.append({"t": round(elapsed, 3),
+                                     "controllers": snapshot_i2c_debug(qmp),
+                                     "gt911": snapshot_gt911_debug(qmp)})
+                next_i2c_sample += 1.5
             cpu0 = sample_cpu(qmp, 0)
             cpu1 = sample_cpu(qmp, 1)
             timeline.append({
@@ -452,6 +486,9 @@ def probe(args) -> dict:
             })
             next_sample += period
         static = collect_static(qmp, args.profile, args.stack_words)
+        if args.i2c_telemetry:
+            static["i2c_debug"] = snapshot_i2c_debug(qmp)
+            static["gt911_debug"] = snapshot_gt911_debug(qmp)
     except Exception as failure:  # keep the captured UART/stderr for the report
         error = f"{type(failure).__name__}: {failure}"
     finally:
@@ -523,6 +560,8 @@ def probe(args) -> dict:
     }
     report.update(static)
     report["rtc_injection"] = rtc_injection
+    if args.i2c_telemetry:
+        report["i2c_timeline"] = i2c_timeline
     if args.exec_trace:
         report["exec_trace"] = summarize_exec_log(work / "exec.log")
     report["verdict"] = classify_outcome(timeline, epd, rtc, flags,
@@ -549,6 +588,8 @@ def main() -> int:
     parser.add_argument("--machine", default=MACHINE)
     parser.add_argument("--stack-words", type=int, default=64,
                         help="words dumped at each CPU A1 after sampling")
+    parser.add_argument("--i2c-telemetry", action="store_true",
+                        help="Collect read-only I2C QOM diagnostic counters from 0098 QEMU")
     parser.add_argument("--inject-rtc", choices=("wakeup", "reject", "deep-wakeup"),
                         help="EXPLICIT test-only QMP RTC event after first sleep request; "
                              "deep-wakeup requests a digital reset, not a returning "
