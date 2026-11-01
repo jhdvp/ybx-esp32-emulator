@@ -1,0 +1,203 @@
+--- a/include/hw/misc/esp32s3_rtc_cntl.h
++++ b/include/hw/misc/esp32s3_rtc_cntl.h
+@@ -78,6 +78,15 @@
+     uint32_t rtc_slowclk_freq;
+     int64_t time_base_ns;
+ 
++    /* RTC sleep handshakes, visible to the guest at 0x18 and 0x3c..0x4c. */
++    uint32_t state0_reg;
++    uint32_t wakeup_state_reg;
++    uint32_t sleep_reject_conf_reg;
++    uint32_t rtc_int_ena;
++    uint32_t rtc_int_raw;
++    uint32_t sleep_requests;
++    uint32_t injected_wakeups;
++    uint32_t injected_rejects;
+     uint32_t options0_reg;
+     uint64_t time_reg;
+     uint32_t sw_cpu_stall_reg;
+@@ -92,6 +101,21 @@
+     FIELD(RTC_CNTL_OPTIONS0, SW_APPCPU_RESET, 4, 1)
+     FIELD(RTC_CNTL_OPTIONS0, SW_STALL_PROCPU_C0, 2, 2)
+     FIELD(RTC_CNTL_OPTIONS0, SW_STALL_APPCPU_C0, 0, 2)
++
++/* ESP32-S3 RTC registers: Espressif ESP-IDF esp32s3/rtc_cntl_reg.h. */
++REG32(RTC_CNTL_STATE0, 0x18)
++    FIELD(RTC_CNTL_STATE0, SLEEP_EN, 31, 1)
++    FIELD(RTC_CNTL_STATE0, SLP_REJECT, 30, 1)
++    FIELD(RTC_CNTL_STATE0, SLP_WAKEUP, 29, 1)
++REG32(RTC_CNTL_WAKEUP_STATE, 0x3c)
++REG32(RTC_CNTL_INT_ENA, 0x40)
++REG32(RTC_CNTL_INT_RAW, 0x44)
++REG32(RTC_CNTL_INT_ST, 0x48)
++REG32(RTC_CNTL_INT_CLR, 0x4c)
++REG32(RTC_CNTL_SLP_REJECT_CONF, 0x68)
++#define RTC_CNTL_SLP_WAKEUP_INT  (1U << 0)
++#define RTC_CNTL_SLP_REJECT_INT  (1U << 1)
++#define RTC_CNTL_SLEEP_INT_MASK (RTC_CNTL_SLP_WAKEUP_INT | RTC_CNTL_SLP_REJECT_INT)
+ 
+ REG32(RTC_CNTL_TIME_UPDATE, 0xc)
+     FIELD(RTC_CNTL_TIME_UPDATE, UPDATE, 31, 1)
+--- a/hw/misc/esp32s3_rtc_cntl.c
++++ b/hw/misc/esp32s3_rtc_cntl.c
+@@ -24,11 +24,76 @@
+ static void esp32s3_rtc_update_cpu_stall(Esp32s3RtcCntlState* s);
+ static void esp32s3_rtc_update_clk(Esp32s3RtcCntlState* s);
+ 
++static void esp32s3_rtc_update_irq(Esp32s3RtcCntlState *s)
++{
++    qemu_set_irq(s->irq, !!(s->rtc_int_ena & s->rtc_int_raw));
++}
++
++/* Test-only external wake/reject sources, deliberately NOT automatic: RTC
++ * EXT1 and the real GPIO wake fabric are not modelled yet. Requiring an
++ * explicit QMP event prevents a fabricated automatic guest wakeup. */
++static void esp32s3_rtc_inject_event(Esp32s3RtcCntlState *s, uint32_t bit)
++{
++    if (!(s->state0_reg & R_RTC_CNTL_STATE0_SLEEP_EN_MASK)) {
++        return;
++    }
++    s->state0_reg &= ~R_RTC_CNTL_STATE0_SLEEP_EN_MASK;
++    if (bit == RTC_CNTL_SLP_WAKEUP_INT) {
++        s->state0_reg |= 1U << 29;
++        s->injected_wakeups++;
++    } else {
++        s->state0_reg |= 1U << 30;
++        s->injected_rejects++;
++    }
++    s->rtc_int_raw |= bit;
++    esp32s3_rtc_update_irq(s);
++}
++
++static bool esp32s3_rtc_get_event(Object *obj, Error **errp)
++{
++    return false;  /* write-one event, not a latching state property */
++}
++
++static void esp32s3_rtc_set_wakeup(Object *obj, bool event, Error **errp)
++{
++    if (event) {
++        esp32s3_rtc_inject_event(ESP32S3_RTC_CNTL(obj), RTC_CNTL_SLP_WAKEUP_INT);
++    }
++}
++
++static void esp32s3_rtc_set_reject(Object *obj, bool event, Error **errp)
++{
++    if (event) {
++        esp32s3_rtc_inject_event(ESP32S3_RTC_CNTL(obj), RTC_CNTL_SLP_REJECT_INT);
++    }
++}
++
+ static uint64_t esp32s3_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(opaque);
+     uint64_t r = 0;
+     switch (addr) {
++    case A_RTC_CNTL_STATE0:
++        r = s->state0_reg;
++        break;
++    case A_RTC_CNTL_WAKEUP_STATE:
++        r = s->wakeup_state_reg;
++        break;
++    case A_RTC_CNTL_SLP_REJECT_CONF:
++        r = s->sleep_reject_conf_reg;
++        break;
++    case A_RTC_CNTL_INT_ENA:
++        r = s->rtc_int_ena;
++        break;
++    case A_RTC_CNTL_INT_RAW:
++        r = s->rtc_int_raw;
++        break;
++    case A_RTC_CNTL_INT_ST:
++        r = s->rtc_int_raw & s->rtc_int_ena;
++        break;
++    case A_RTC_CNTL_INT_CLR:
++        r = 0; /* W1C only */
++        break;
+     case A_RTC_CNTL_OPTIONS0:
+         r = s->options0_reg;
+         break;
+@@ -81,6 +146,30 @@
+ {
+     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(opaque);
+     switch (addr) {
++    case A_RTC_CNTL_STATE0:
++        s->state0_reg = value & ~(3U << 29);
++        if (value & R_RTC_CNTL_STATE0_SLEEP_EN_MASK) {
++            s->sleep_requests++;
++        }
++        break;
++    case A_RTC_CNTL_WAKEUP_STATE:
++        s->wakeup_state_reg = value;
++        break;
++    case A_RTC_CNTL_SLP_REJECT_CONF:
++        s->sleep_reject_conf_reg = value;
++        break;
++    case A_RTC_CNTL_INT_ENA:
++        s->rtc_int_ena = value;
++        esp32s3_rtc_update_irq(s);
++        break;
++    case A_RTC_CNTL_INT_CLR:
++        s->rtc_int_raw &= ~((uint32_t)value);
++        esp32s3_rtc_update_irq(s);
++        break;
++    case A_RTC_CNTL_INT_RAW:
++    case A_RTC_CNTL_INT_ST:
++        /* These two registers are read-only. */
++        break;
+     case A_RTC_CNTL_OPTIONS0:
+         if (value & R_RTC_CNTL_OPTIONS0_SW_SYS_RESET_MASK) {
+             s->reset_cause[0] = ESP32_SW_SYS_RESET;
+@@ -182,6 +271,10 @@
+     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(obj);
+ 
+     s->time_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    s->state0_reg = s->wakeup_state_reg = s->sleep_reject_conf_reg = 0;
++    s->rtc_int_ena = s->rtc_int_raw = 0;
++    s->sleep_requests = s->injected_wakeups = s->injected_rejects = 0;
++    esp32s3_rtc_update_irq(s);
+ }
+ 
+ static void esp32s3_rtc_cntl_realize(DeviceState *dev, Error **errp)
+@@ -197,6 +290,18 @@
+                           TYPE_ESP32S3_RTC_CNTL, ESP32S3_RTC_CNTL_SIZE);
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
++    object_property_add_bool(obj, "ybx-rtc-inject-wakeup",
++                             esp32s3_rtc_get_event, esp32s3_rtc_set_wakeup);
++    object_property_add_bool(obj, "ybx-rtc-inject-reject",
++                             esp32s3_rtc_get_event, esp32s3_rtc_set_reject);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-int-raw", &s->rtc_int_raw,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-sleep-requests", &s->sleep_requests,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-injected-wakeups", &s->injected_wakeups,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-injected-rejects", &s->injected_rejects,
++                                   OBJ_PROP_FLAG_READ);
+     qdev_init_gpio_out_named(DEVICE(sbd), &s->dig_reset_req, ESP32S3_RTC_DIG_RESET_GPIO, 1);
+     qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_reset_req[0], ESP32S3_RTC_CPU_RESET_GPIO, ESP32S3_CPU_COUNT);
+     qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_stall_req[0], ESP32S3_RTC_CPU_STALL_GPIO, ESP32S3_CPU_COUNT);
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -444,6 +444,20 @@
+ 
+     qdev_realize(DEVICE(&s->rtc_cntl), &s->rtc_bus, &error_fatal);
+     esp32s3_soc_add_periph_device(sys_mem, &s->rtc_cntl, DR_REG_RTCCNTL_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(&s->rtc_cntl), 0,
++                       qdev_get_gpio_in(intmatrix_dev, ETS_RTC_CORE_INTR_SOURCE));
++    object_property_add_alias(OBJECT(s), "ybx-rtc-inject-wakeup",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-inject-wakeup");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-inject-reject",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-inject-reject");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-int-raw",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-int-raw");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-sleep-requests",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-sleep-requests");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-injected-wakeups",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-injected-wakeups");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-injected-rejects",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-injected-rejects");
+ 
+     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32S3_RTC_DIG_RESET_GPIO, 0,
+                                 qdev_get_gpio_in_named(dev, ESP32S3_RTC_DIG_RESET_GPIO, 0));
