@@ -1,0 +1,218 @@
+--- a/include/hw/misc/esp32s3_rtc_cntl.h
++++ b/include/hw/misc/esp32s3_rtc_cntl.h
+@@ -88,6 +88,16 @@
+     uint32_t injected_wakeups;
+     uint32_t injected_rejects;
+     uint32_t deep_wake_resets;
++    /* ESP32-S3 RTC EXT1: selected RTC IO pins, level mode, retained status.
++     * Inputs are unknown until driven by a connected board pin/test source. */
++    uint32_t ext1_sel;
++    uint32_t ext1_conf;
++    uint32_t ext1_status;
++    uint32_t ext1_pad_high;
++    uint32_t ext1_pad_valid;
++    uint32_t ext1_test_pin;
++    uint32_t ext1_input_events;
++    uint32_t ext1_wake_events;
+     uint32_t options0_reg;
+     uint64_t time_reg;
+     uint32_t sw_cpu_stall_reg;
+@@ -117,6 +127,16 @@
+ #define RTC_CNTL_SLP_WAKEUP_INT  (1U << 0)
+ #define RTC_CNTL_SLP_REJECT_INT  (1U << 1)
+ #define RTC_CNTL_SLEEP_INT_MASK (RTC_CNTL_SLP_WAKEUP_INT | RTC_CNTL_SLP_REJECT_INT)
++
++REG32(RTC_CNTL_EXT_WAKEUP_CONF, 0x64)
++REG32(RTC_CNTL_EXT_WAKEUP1, 0xe0)
++REG32(RTC_CNTL_EXT_WAKEUP1_STATUS, 0xe4)
++#define RTC_CNTL_EXT1_PAD_MASK 0x003FFFFFU
++#define RTC_CNTL_EXT1_STATUS_CLEAR (1U << 22)
++#define RTC_CNTL_EXT1_ANY_HIGH_MODE (1U << 31)
++#define RTC_CNTL_EXT1_WAKEUP_EN (1U << (15 + 1))
++#define ESP32S3_RTC_EXT1_PAD_IN "ybx.rtc-ext1-pad"
++#define ESP32S3_RTC_EXT1_PADS 22
+ 
+ REG32(RTC_CNTL_TIME_UPDATE, 0xc)
+     FIELD(RTC_CNTL_TIME_UPDATE, UPDATE, 31, 1)
+--- a/hw/misc/esp32s3_rtc_cntl.c
++++ b/hw/misc/esp32s3_rtc_cntl.c
+@@ -24,6 +24,72 @@
+ static void esp32s3_rtc_update_cpu_stall(Esp32s3RtcCntlState* s);
+ static void esp32s3_rtc_update_clk(Esp32s3RtcCntlState* s);
+ 
++/* EXT1 is level triggered, gated by guest-programmed RTC pin mask, mode
++ * and EXT1 enable. Unknown/unconnected pads cannot wake the guest. */
++static void esp32s3_rtc_ext1_check(Esp32s3RtcCntlState *s)
++{
++    uint32_t selected = s->ext1_sel & RTC_CNTL_EXT1_PAD_MASK;
++    uint32_t valid = s->ext1_pad_valid & selected;
++    uint32_t highs = s->ext1_pad_high & selected;
++    bool high_mode = !!(s->ext1_conf & RTC_CNTL_EXT1_ANY_HIGH_MODE);
++    uint32_t active = high_mode ? (valid & highs) : (selected & ~highs);
++
++    if (!(s->state0_reg & R_RTC_CNTL_STATE0_SLEEP_EN_MASK) ||
++        !(s->wakeup_state_reg & RTC_CNTL_EXT1_WAKEUP_EN) ||
++        !selected || !valid) {
++        return;
++    }
++    /* ANY_HIGH may wake on any known selected high; ALL_LOW requires every
++     * selected pad to be known and low, not just one of them. */
++    if ((high_mode && !active) ||
++        (!high_mode && (valid != selected || highs != 0))) {
++        return;
++    }
++    s->ext1_status = active & selected;
++    s->state0_reg &= ~R_RTC_CNTL_STATE0_SLEEP_EN_MASK;
++    s->rtc_int_raw &= ~RTC_CNTL_SLEEP_INT_MASK;
++    s->reset_cause[0] = ESP32_DEEPSLEEP_RESET;
++    s->reset_cause[1] = ESP32_DEEPSLEEP_RESET;
++    s->ext1_wake_events++;
++    s->deep_wake_resets++;
++    qemu_irq_pulse(s->dig_reset_req);
++}
++
++static void esp32s3_rtc_ext1_pad_input(void *opaque, int pin, int level)
++{
++    Esp32s3RtcCntlState *s = opaque;
++    if (pin < 0 || pin >= ESP32S3_RTC_EXT1_PADS) {
++        return;
++    }
++    uint32_t bit = 1U << pin;
++    s->ext1_pad_valid |= bit;
++    if (level) {
++        s->ext1_pad_high |= bit;
++    } else {
++        s->ext1_pad_high &= ~bit;
++    }
++    s->ext1_input_events++;
++    esp32s3_rtc_ext1_check(s);
++}
++
++static bool esp32s3_rtc_get_ext1_test_level(Object *obj, Error **errp)
++{
++    Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(obj);
++    return s->ext1_test_pin < ESP32S3_RTC_EXT1_PADS &&
++           !!(s->ext1_pad_high & (1U << s->ext1_test_pin));
++}
++
++static void esp32s3_rtc_set_ext1_test_level(Object *obj, bool level, Error **errp)
++{
++    Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(obj);
++    if (s->ext1_test_pin >= ESP32S3_RTC_EXT1_PADS) {
++        error_setg(errp, "EXT1 RTC pad must be in range 0..21");
++        return;
++    }
++    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(s),
++                 ESP32S3_RTC_EXT1_PAD_IN, s->ext1_test_pin), level);
++}
++
+ static void esp32s3_rtc_update_irq(Esp32s3RtcCntlState *s)
+ {
+     qemu_set_irq(s->irq, !!(s->rtc_int_ena & s->rtc_int_raw));
+@@ -102,6 +168,15 @@
+     case A_RTC_CNTL_SLP_REJECT_CONF:
+         r = s->sleep_reject_conf_reg;
+         break;
++    case A_RTC_CNTL_EXT_WAKEUP_CONF:
++        r = s->ext1_conf;
++        break;
++    case A_RTC_CNTL_EXT_WAKEUP1:
++        r = s->ext1_sel;
++        break;
++    case A_RTC_CNTL_EXT_WAKEUP1_STATUS:
++        r = s->ext1_status;
++        break;
+     case A_RTC_CNTL_INT_ENA:
+         r = s->rtc_int_ena;
+         break;
+@@ -170,6 +245,7 @@
+         s->state0_reg = value & ~(3U << 29);
+         if (value & R_RTC_CNTL_STATE0_SLEEP_EN_MASK) {
+             s->sleep_requests++;
++            esp32s3_rtc_ext1_check(s);
+         }
+         break;
+     case A_RTC_CNTL_WAKEUP_STATE:
+@@ -177,6 +253,17 @@
+         break;
+     case A_RTC_CNTL_SLP_REJECT_CONF:
+         s->sleep_reject_conf_reg = value;
++        break;
++    case A_RTC_CNTL_EXT_WAKEUP_CONF:
++        s->ext1_conf = value;
++        esp32s3_rtc_ext1_check(s);
++        break;
++    case A_RTC_CNTL_EXT_WAKEUP1:
++        if (value & RTC_CNTL_EXT1_STATUS_CLEAR) {
++            s->ext1_status = 0;
++        }
++        s->ext1_sel = value & RTC_CNTL_EXT1_PAD_MASK;
++        esp32s3_rtc_ext1_check(s);
+         break;
+     case A_RTC_CNTL_INT_ENA:
+         s->rtc_int_ena = value;
+@@ -295,6 +382,9 @@
+     s->rtc_int_ena = s->rtc_int_raw = 0;
+     s->sleep_requests = s->injected_wakeups = s->injected_rejects = 0;
+     s->deep_wake_resets = 0;
++    s->ext1_sel = s->ext1_conf = s->ext1_status = 0;
++    s->ext1_pad_high = s->ext1_pad_valid = 0;
++    s->ext1_test_pin = s->ext1_input_events = s->ext1_wake_events = 0;
+     esp32s3_rtc_update_irq(s);
+ }
+ 
+@@ -311,6 +401,27 @@
+                           TYPE_ESP32S3_RTC_CNTL, ESP32S3_RTC_CNTL_SIZE);
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
++    qdev_init_gpio_in_named(DEVICE(s), esp32s3_rtc_ext1_pad_input,
++                            ESP32S3_RTC_EXT1_PAD_IN, ESP32S3_RTC_EXT1_PADS);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-test-pin", &s->ext1_test_pin,
++                                   OBJ_PROP_FLAG_READWRITE);
++    object_property_add_bool(obj, "ybx-rtc-ext1-test-level",
++                             esp32s3_rtc_get_ext1_test_level,
++                             esp32s3_rtc_set_ext1_test_level);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-sel", &s->ext1_sel,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-conf", &s->ext1_conf,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-status", &s->ext1_status,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-pad-high", &s->ext1_pad_high,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-pad-valid", &s->ext1_pad_valid,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-input-events", &s->ext1_input_events,
++                                   OBJ_PROP_FLAG_READ);
++    object_property_add_uint32_ptr(obj, "ybx-rtc-ext1-wake-events", &s->ext1_wake_events,
++                                   OBJ_PROP_FLAG_READ);
+     object_property_add_bool(obj, "ybx-rtc-inject-wakeup",
+                              esp32s3_rtc_get_event, esp32s3_rtc_set_wakeup);
+     object_property_add_bool(obj, "ybx-rtc-inject-reject",
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -462,6 +462,24 @@
+                               OBJECT(&s->rtc_cntl), "ybx-rtc-inject-deep-wakeup");
+     object_property_add_alias(OBJECT(s), "ybx-rtc-deep-wake-resets",
+                               OBJECT(&s->rtc_cntl), "ybx-rtc-deep-wake-resets");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-test-pin",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-test-pin");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-test-level",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-test-level");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-sel",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-sel");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-conf",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-conf");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-status",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-status");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-pad-high",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-pad-high");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-pad-valid",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-pad-valid");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-input-events",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-input-events");
++    object_property_add_alias(OBJECT(s), "ybx-rtc-ext1-wake-events",
++                              OBJECT(&s->rtc_cntl), "ybx-rtc-ext1-wake-events");
+ 
+     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32S3_RTC_DIG_RESET_GPIO, 0,
+                                 qdev_get_gpio_in_named(dev, ESP32S3_RTC_DIG_RESET_GPIO, 0));
