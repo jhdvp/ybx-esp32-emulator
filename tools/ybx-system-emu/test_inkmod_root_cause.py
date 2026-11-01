@@ -462,7 +462,11 @@ class RunbookSafety(unittest.TestCase):
                       ":/roms:ro"):
             self.assertIn(mount, text)
         self.assertIn("ybx-qemu-builder:20261029", text)
-        self.assertNotIn("browser", text.replace("browser container is never", ""))
+        # The checkout path may itself contain "browser"; reject only a
+        # launch of the browser bridge, not arbitrary directory names.
+        self.assertNotIn("--name ybx-x4pro-browser", text)
+        self.assertNotIn("serve_x4pro_browser.py", text)
+        self.assertNotIn("--network bridge", text)
         for label in ("factory-control", "inkmod-pristine", "inkmod-forced-wake"):
             self.assertIn(label, text)
         self.assertIn("probe_x4pro_inkmod_trace.py", text)

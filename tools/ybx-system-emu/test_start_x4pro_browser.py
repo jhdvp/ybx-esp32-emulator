@@ -39,7 +39,7 @@ else:
 
 
 class BrowserLauncherTest(unittest.TestCase):
-    def run_launch(self, initial_status, bind="127.0.0.1"):
+    def run_launch(self, initial_status, bind="127.0.0.1", power="0"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bin_dir = root / "bin"
@@ -72,6 +72,7 @@ class BrowserLauncherTest(unittest.TestCase):
                 "YBX_QA_DIR": str(qa_dir),
                 "YBX_BROWSER_PORT": "8797",
                 "YBX_BROWSER_BIND_ADDRESS": bind,
+                "YBX_BROWSER_POWER_BUTTON": power,
             }
             result = subprocess.run(
                 ["bash", str(LAUNCHER)],
@@ -79,6 +80,38 @@ class BrowserLauncherTest(unittest.TestCase):
             )
             return result, status.read_text(), log.read_text() if log.exists() else ""
 
+
+    def test_power_flag_is_opt_in_and_absent_by_default(self):
+        result, _, log = self.run_launch("missing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--enable-power-button", log)
+
+    def test_power_flag_injects_only_into_experimental_container(self):
+        result, _, log = self.run_launch("missing", power="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--enable-power-button", log)
+        self.assertIn("-p 127.0.0.1:8797:8797", log)
+
+    def test_power_refuses_unprotected_lan_without_separate_consent(self):
+        result, status, log = self.run_launch("missing", bind="192.168.10.239", power="1")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(status, "missing")
+        self.assertEqual(log, "")
+
+    def test_power_refuses_existing_stable_port_8784(self):
+        # The safety check runs before Docker even for an existing container.
+        with tempfile.TemporaryDirectory() as directory:
+            # Test the static guard alongside dynamic tests; PORT is set to
+            # 8797 in run_launch, so ensure the hard refusal exists.
+            text = LAUNCHER.read_text()
+            self.assertIn('"$POWER_FLAG" == "1" && "$PORT" == "8784"',text)
+            self.assertIn('Refusing experimental Power on stable browser port 8784',text)
+
+    def test_malformed_power_flag_fails_before_docker(self):
+        result, status, log = self.run_launch("missing", power="yes")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(status, "missing")
+        self.assertEqual(log, "")
 
     def test_missing_container_starts(self):
         result, status, log = self.run_launch("missing")

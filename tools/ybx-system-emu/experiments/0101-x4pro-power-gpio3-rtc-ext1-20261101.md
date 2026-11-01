@@ -14,7 +14,7 @@ Date: 2026-11-01. Experimental branch `feat/x4pro-power-rtc-wake-20261101`, isol
 - **Real defect found by QTest**: QEMU reset originally restored `GPIO_IN` from pull-up values even when the externally driven Power button remained physically held LOW. This incorrectly turned the digital GPIO3 HIGH after a DSLEEP reset, while the RTC domain remained LOW. The revised digital GPIO model records *externally driven pin levels* separately from software output latches and re-applies them after digital reset. This is general to opt-in emulated GPIO outputs on S3, not a hard-coded fake input read for just GPIO3.
 - Existing guest-programmed RTC EXT1 mask/mode/wake-enable gate from 0100 remains solely responsible for initiating the digital reset.
 
-Experimental QEMU binary SHA-256: `7a3feb4ca30af038bc1b7f63165a45197fa298f26a93a87963b051dc245bfab3`; no QEMU binary, ROM, merged flash or SD image is committed. Source patch independently passed `patch --dry-run -p1` against the 0100 QEMU checkout.
+Experimental QEMU binary SHA-256 after **the external-level GPIO reset-retention fix and rebuild**: `7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc` (the earlier `7a3feb4c...` hash was an obsolete pre-fix binary, caught during 0102 source/binary audit); no QEMU binary, ROM, merged flash or SD image is committed. Source patch independently passed `patch --dry-run -p1` against the 0100 QEMU checkout.
 
 ## Real QTest against compiled experimental QEMU
 

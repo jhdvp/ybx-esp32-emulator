@@ -8,6 +8,21 @@ QEMU_ROOT="${YBX_QEMU_ROOT:-$HOME/.local/state/ybx-emulator-upstream/qemu-romini
 QA_ROOT="${YBX_QA_DIR:-$HOME/Projects/YBX/artifacts/ybx-esp32-system-emulation-20261029/qa-20261029}"
 PORT="${YBX_BROWSER_PORT:-8784}"
 BIND_IP="${YBX_BROWSER_BIND_ADDRESS:-127.0.0.1}"
+POWER_FLAG="${YBX_BROWSER_POWER_BUTTON:-0}"
+if [[ "$POWER_FLAG" != "0" && "$POWER_FLAG" != "1" ]]; then
+  echo "YBX_BROWSER_POWER_BUTTON must be 0 or 1" >&2
+  exit 2
+fi
+# Never silently opt an experimental binary into the established 8784 slot.
+if [[ "$POWER_FLAG" == "1" && "$PORT" == "8784" ]]; then
+  echo "Refusing experimental Power on stable browser port 8784; choose an isolated port" >&2
+  exit 2
+fi
+POWER_EXTRA=""
+if [[ "$POWER_FLAG" == "1" ]]; then
+  POWER_EXTRA=1
+  echo "EXPERIMENTAL X4 Pro POWER GPIO3 enabled on this instance only." >&2
+fi
 # Folder of candidate ROM files for the in-page picker. The bridge only READS
 # it (mounted :ro); the operator drops his own .bin files here on the Mac.
 ROM_DIR="${YBX_ROM_DIR:-${QA_ROOT%/*}/roms}"
@@ -24,6 +39,12 @@ if ! python3 -c 'import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); ok=
   echo "Refusing non-private or invalid HTTP bind address: $BIND_IP" >&2
   echo "Only IPv4 loopback (127.0.0.1) or private LAN ranges are allowed;" >&2
   echo "public, link-local and IPv6 binds are rejected." >&2
+  exit 2
+fi
+if [[ "$POWER_FLAG" == "1" && "$BIND_IP" != "127.0.0.1" &&
+      "${YBX_BROWSER_ALLOW_UNAUTHENTICATED_POWER_LAN:-0}" != "1" ]]; then
+  echo "Experimental Power requires loopback; to expose on a trusted LAN, explicitly set" >&2
+  echo "YBX_BROWSER_ALLOW_UNAUTHENTICATED_POWER_LAN=1 (NO AUTH / NO TLS)" >&2
   exit 2
 fi
 if [[ "$BIND_IP" != "127.0.0.1" ]]; then
@@ -84,7 +105,8 @@ if ! docker container inspect "$CONTAINER" >/dev/null 2>&1; then
       --firmware-dir /fw \
       --flash /work/s3-flash-complete-rom-test.bin \
       --sd-image /work/ybx-test-sd-fat16-mbr-pristine.img \
-      --host 0.0.0.0 --port "$PORT"
+      --host 0.0.0.0 --port "$PORT" \
+      ${POWER_EXTRA:+--enable-power-button}
 fi
 echo "Open: http://$BIND_IP:$PORT/ (LAN binding has NO authentication; trusted network only)"
 echo "ROM folder (read-only for the bridge; drop .bin files here to offer them in the picker): $ROM_DIR"
