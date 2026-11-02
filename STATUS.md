@@ -1,7 +1,7 @@
-# YBX ESP32 emulator — status snapshot, 2026-11-01
+# YBX ESP32 emulator — status snapshot, 2026-11-02
 
 This file is the consolidated result of every agent batch and every fix up to
-2026-11-01. It is meant to be read instead of the individual experiment
+2026-11-02. It is meant to be read instead of the individual experiment
 reports; each row links to the evidence.
 
 ## The live emulator
@@ -9,14 +9,14 @@ reports; each row links to the evidence.
 | Item | Value |
 |---|---|
 | Repository | `github.com/jhdvp/ybx-esp32-emulator` (MIT tooling, GPL-2.0 QEMU patches) |
-| Live QEMU tree | `~/.local/state/ybx-emulator-upstream/qemu-wf-radio-20261031` |
-| Live binary SHA-256 | `f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236` |
-| Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (26 patches) |
-| Rollback trees | `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
+| Live QEMU tree | `~/.local/state/ybx-emulator-upstream/qemu-rtc-power-20261102` |
+| Live binary SHA-256 | `7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc` (verified inside container 8784) |
+| Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (32 patches; 0096–0101 now included) |
+| Rollback trees | Old `qemu-wf-radio-20261031` (SHA `f65db0a7…`) retained; additionally: `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
 | Host tests | 959 tests (949 pass, 10 skip; local companion firmware/media present, 2026-11-02) |
-| Proposed new release QEMU | `~/.local/state/ybx-emulator-upstream/qemu-rtc-power-20261102`, SHA-256 `7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc` (pinned 32-patch chain; not yet switched at 8784 at commit time) |
-| New release boot guard | Pinned binary, signed 32-patch manifest, 31 source files and factory Home `e79c2ad5…` checked. Private `8801` persistent-media restart succeeded; see 0105. |
-| Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduces the live binary byte-identically (`f65db0a7…`, `rc=0`) |
+| Deployed release QEMU | `~/.local/state/ybx-emulator-upstream/qemu-rtc-power-20261102`, SHA-256 `7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc` (pinned 32-patch chain; running on 8784 after verified cutover) |
+| Live release verification (14/14 checks PASS) | Pinned binary, signed 32-patch manifest, 31 source files and factory Home `e79c2ad5…` checked. Private `8801` persistent-media restart succeeded; see 0105. |
+| Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduced the former release binary byte-identically (`f65db0a7…`, `rc=0`) |
 
 ## What the emulator can do today
 
@@ -25,7 +25,7 @@ reports; each row links to the evidence.
 | Boot the factory YBX image and paint | ✅ verified (Home `e79c2ad5…`) |
 | Boot stock CrossPoint 2.0.0rc and 1.6.5 | ✅ verified (Home `78e743450b8f…` / `9efb6cf59096…`) |
 | Boot local YBX builds | ✅ verified |
-| Boot inkMOD 1.1.10 | ⚠️ **live 8784:** RTC poll, no paint. **Isolated 0097–0099:** explicit QMP DSLEEP reset, native home plus real GT911 point reads/SSD1677 screen transitions to Browse Files, Settings, Controls and Reader; no I²C errors. Autonomous EXT1 wake and physical button navigation not implemented ([0099](tools/ybx-system-emu/experiments/0099-inkmod-native-gt911-navigation-20261101.md)) |
+| Boot inkMOD 1.1.10 | ⚠️ **live 8784:** QEMU supports native RTC EXT1 Power wake, but the virtual Power endpoint is disabled on the unauthenticated LAN bridge; inkMOD stays asleep until a virtual wake is provided. **Isolated 0097–0099:** explicit QMP DSLEEP reset, native home plus real GT911 point reads/SSD1677 screen transitions to Browse Files, Settings, Controls and Reader; no I²C errors. Virtual GPIO3 EXT1 wake and native GT911 navigation verified; physical board-button behavior not verified ([0099](tools/ybx-system-emu/experiments/0099-inkmod-native-gt911-navigation-20261101.md)) |
 | Touch (GT911), navigation, reboot | ✅ verified end to end with frame SHA gates |
 | E-Ink BUSY telemetry in the browser | ✅ `/api/telemetry`, balanced edges, 350 ms windows |
 | SSD1677 deep sleep / split windows / BUSY around reset | ✅ modelled (0069), defaults unchanged |
