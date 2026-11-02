@@ -18,6 +18,18 @@ if [[ "$POWER_FLAG" == "1" && "$PORT" == "8784" ]]; then
   echo "Refusing experimental Power on stable browser port 8784; choose an isolated port" >&2
   exit 2
 fi
+PERSIST_DIR="${YBX_BROWSER_PERSIST_DIR:-}"
+PERSIST_ARGS=()
+PERSIST_MOUNT=()
+if [[ -n "$PERSIST_DIR" ]]; then
+  [[ "$PERSIST_DIR" = /* && -d "$PERSIST_DIR" && ! -L "$PERSIST_DIR" ]] || {
+    echo "YBX_BROWSER_PERSIST_DIR must be an existing absolute non-symlink directory" >&2
+    exit 2
+  }
+  PERSIST_ARGS=(--persistent-media-dir /persist)
+  PERSIST_MOUNT=(-v "$PERSIST_DIR:/persist:rw")
+  echo "Persisting guest flash/SD to $PERSIST_DIR; back up this directory before upgrades" >&2
+fi
 POWER_EXTRA=""
 if [[ "$POWER_FLAG" == "1" ]]; then
   POWER_EXTRA=1
@@ -97,6 +109,7 @@ if ! docker container inspect "$CONTAINER" >/dev/null 2>&1; then
     -v "$QA_ROOT:/work:ro" \
     -v "$ROM_DIR:/roms:ro" \
     -v "$FW_DIR:/fw:ro" \
+    ${PERSIST_MOUNT[@]+"${PERSIST_MOUNT[@]}"} \
     -w /tmp "$IMAGE" \
     python3 -u /tests/serve_x4pro_browser.py \
       --qemu-bin /qemu/build-ybx/qemu-system-xtensa \
@@ -106,6 +119,7 @@ if ! docker container inspect "$CONTAINER" >/dev/null 2>&1; then
       --flash /work/s3-flash-complete-rom-test.bin \
       --sd-image /work/ybx-test-sd-fat16-mbr-pristine.img \
       --host 0.0.0.0 --port "$PORT" \
+      ${PERSIST_ARGS[@]+"${PERSIST_ARGS[@]}"} \
       ${POWER_EXTRA:+--enable-power-button}
 fi
 echo "Open: http://$BIND_IP:$PORT/ (LAN binding has NO authentication; trusted network only)"

@@ -39,7 +39,8 @@ else:
 
 
 class BrowserLauncherTest(unittest.TestCase):
-    def run_launch(self, initial_status, bind="127.0.0.1", power="0"):
+    def run_launch(self, initial_status, bind="127.0.0.1", power="0",
+                   persist="off"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bin_dir = root / "bin"
@@ -60,6 +61,9 @@ class BrowserLauncherTest(unittest.TestCase):
             ):
                 (qa_dir / name).touch()
 
+            persist_dir = root / "persist"
+            if persist == "valid":
+                persist_dir.mkdir()
             status = root / "status"
             status.write_text(initial_status)
             log = root / "docker.log"
@@ -73,6 +77,8 @@ class BrowserLauncherTest(unittest.TestCase):
                 "YBX_BROWSER_PORT": "8797",
                 "YBX_BROWSER_BIND_ADDRESS": bind,
                 "YBX_BROWSER_POWER_BUTTON": power,
+                "YBX_BROWSER_PERSIST_DIR": ("" if persist == "off"
+                                            else str(persist_dir)),
             }
             result = subprocess.run(
                 ["bash", str(LAUNCHER)],
@@ -80,6 +86,25 @@ class BrowserLauncherTest(unittest.TestCase):
             )
             return result, status.read_text(), log.read_text() if log.exists() else ""
 
+
+    def test_persist_dir_is_opt_in_and_rw_host_mounted(self):
+        result, status, log = self.run_launch("missing", persist="valid")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(status, "running")
+        self.assertIn(":/persist:rw", log)
+        self.assertIn("--persistent-media-dir /persist", log)
+
+    def test_persist_dir_missing_fails_before_docker(self):
+        result, status, log = self.run_launch("missing", persist="missing")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(status, "missing")
+        self.assertEqual(log, "")
+
+    def test_default_never_mounts_writable_guest_media(self):
+        result, _, log = self.run_launch("missing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(":/persist:rw", log)
+        self.assertNotIn("--persistent-media-dir", log)
 
     def test_power_flag_is_opt_in_and_absent_by_default(self):
         result, _, log = self.run_launch("missing")

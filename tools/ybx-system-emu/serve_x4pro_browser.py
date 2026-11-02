@@ -512,6 +512,37 @@ def check_touch(data):
     return x, y, ms
 
 
+def prepare_guest_media(flash_source: Path, sd_source: Path,
+                        workdir: Path, persistent_dir: Path | None):
+    """Select guest R/W images without ever changing the immutable templates.
+
+    In persistent mode, existing images are *resumed* without replacement. A
+    half-populated or wrong-size media directory must fail closed: silently
+    reinitializing either file would destroy book progress and erase flash.
+    """
+    media_root = persistent_dir if persistent_dir is not None else workdir
+    flash = media_root / "flash.bin"
+    sd = media_root / "sd.img"
+    if flash.is_symlink() or sd.is_symlink():
+        raise RuntimeError("persistent guest disk symlinks are forbidden")
+    existing = (flash.exists(), sd.exists())
+    if persistent_dir is not None and any(existing) and not all(existing):
+        raise RuntimeError("persistent media is incomplete: flash.bin and "
+                           "sd.img must both exist, or neither")
+    if persistent_dir is None or not any(existing):
+        if persistent_dir is not None and any(existing):
+            raise AssertionError("unreachable partial media")
+        shutil.copyfile(flash_source, flash)
+        shutil.copyfile(sd_source, sd)
+    for target, source in ((flash, flash_source), (sd, sd_source)):
+        if not target.is_file() or target.is_symlink():
+            raise RuntimeError(f"guest media must be a regular file: {target}")
+        if target.stat().st_size != source.stat().st_size:
+            raise RuntimeError(f"guest media size mismatch: {target}; "
+                               "refusing to discard or resize saved data")
+    return flash, sd
+
+
 class FactoryX4Pro:
     tap_wait_seconds = 2.0
     tap_queue_depth = 4
@@ -536,8 +567,15 @@ class FactoryX4Pro:
         t = self.workdir
         (t / "rom").mkdir()
         shutil.copyfile(args.rom, t / "rom" / self.ROM_FILENAME_IN_WORKDIR)
-        shutil.copyfile(args.flash, t / "flash.bin")
-        shutil.copyfile(args.sd_image, t / "sd.img")
+        self.persistent_media_dir = getattr(args, "persistent_media_dir", None)
+        self.flash_path, self.sd_path = prepare_guest_media(
+            args.flash, args.sd_image, t, self.persistent_media_dir)
+        # Snapshot provenance is separate from the ORIGINAL firmware template.
+        # Runtime writes can change these hashes after this initial capture.
+        with self.flash_path.open("rb") as source:
+            self.initial_guest_flash_sha = hashlib.file_digest(source, "sha256").hexdigest()
+        with self.sd_path.open("rb") as source:
+            self.initial_guest_sd_sha = hashlib.file_digest(source, "sha256").hexdigest()
         self.rom_dir = Path(getattr(args, "rom_dir", None)
                             or Path(args.rom).parent)
         self.rom_name = Path(args.rom).name
@@ -548,6 +586,7 @@ class FactoryX4Pro:
         self.firmware_path = Path(args.flash)
         self.firmware_sha = sha256_file(Path(args.flash),
                                         self.FW_MAX_HASH_BYTES)
+        self._restore_firmware_selection()
         self.qemu_bin = args.qemu_bin
         self.power_enabled = bool(getattr(args, "enable_power_button", False))
         self.power_pressed = False
@@ -593,8 +632,8 @@ class FactoryX4Pro:
             "-serial","null","-serial","null","-serial","null",
             "-qmp",f"unix:{t/'qmp.sock'},server=on,wait=off",
             "-L",str(t/"rom"),
-            "-drive",f"file={t/'flash.bin'},if=mtd,format=raw",
-            "-drive",f"file={t/'sd.img'},if=sd,format=raw"
+            "-drive",f"file={self.flash_path},if=mtd,format=raw",
+            "-drive",f"file={self.sd_path},if=sd,format=raw"
         ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
            stderr=self.qemu_log)
         try:
@@ -757,6 +796,9 @@ class FactoryX4Pro:
                     "firmware":self.firmware_info(),
                     "rom":self.rom_info(),
                     "physical_device":False,
+                    "media": {"persistent": bool(getattr(self, "persistent_media_dir", None)),
+                              "initial_guest_flash_sha256": getattr(self, "initial_guest_flash_sha", None),
+                              "initial_guest_sd_sha256": getattr(self, "initial_guest_sd_sha", None)},
                     "power":self.power_status()}
 
     def telemetry(self):
@@ -933,6 +975,38 @@ class FactoryX4Pro:
                 "provenance_note": PROVENANCE_LABELS[provenance]}
 
     # --- firmware picker ----------------------------------------------------
+    def _restore_firmware_selection(self):
+        """Restore a firmware picker label only for a persistent guest flash.
+
+        The template/source hash and on-disk guest flash can legitimately
+        differ as NVS/reading progress is written by the virtual ESP32.
+        """
+        root = getattr(self, "persistent_media_dir", None)
+        if root is None:
+            return
+        selection = root / "firmware-selection.json"
+        if not selection.is_file():
+            return
+        metadata = json.loads(selection.read_text())
+        name, sha = metadata.get("name"), metadata.get("sha256")
+        if (not isinstance(name, str) or not name or Path(name).name != name
+                or not isinstance(sha, str) or len(sha) != 64
+                or any(c not in "0123456789abcdef" for c in sha)):
+            raise RuntimeError("invalid persisted firmware metadata")
+        self.firmware_name = name
+        self.firmware_sha = sha
+        self.firmware_path = self.firmware_dir / name
+
+    def _save_firmware_selection(self):
+        root = getattr(self, "persistent_media_dir", None)
+        if root is None:
+            return
+        dest = root / "firmware-selection.json"
+        staged = root / "firmware-selection.json.new"
+        staged.write_text(json.dumps({"name": self.firmware_name,
+                                      "sha256": self.firmware_sha}) + "\n")
+        os.replace(staged, dest)
+
     def firmware_info(self):
         provenance = self.provenance_of(self.firmware_sha)
         return {"name": self.firmware_name,
@@ -1089,22 +1163,26 @@ class FactoryX4Pro:
                 self._stop_process()
                 if self.client is not None:
                     self.client.close()
-                staged = self.workdir / (self.FW_FLASH_FILENAME_IN_WORKDIR
-                                         + ".new")
+                # Stage and replace on the SAME filesystem (atomic rename).
+                # On a persistent volume do not swap a temporary symlink and
+                # accidentally detach the live QEMU disk from host storage.
+                flash_path = getattr(self, "flash_path",
+                                     self.workdir / self.FW_FLASH_FILENAME_IN_WORKDIR)
+                staged = flash_path.with_suffix(flash_path.suffix + ".new")
                 shutil.copyfile(target, staged)
-                os.replace(staged, self.workdir
-                           / self.FW_FLASH_FILENAME_IN_WORKDIR)
+                os.replace(staged, flash_path)
                 paired = self._paired_sd_image(target)
                 if paired is not None:
-                    staged_sd = self.workdir / (self.FW_SD_FILENAME_IN_WORKDIR
-                                               + ".new")
+                    sd_path = getattr(self, "sd_path",
+                                      self.workdir / self.FW_SD_FILENAME_IN_WORKDIR)
+                    staged_sd = sd_path.with_suffix(sd_path.suffix + ".new")
                     shutil.copyfile(paired, staged_sd)
-                    os.replace(staged_sd, self.workdir
-                               / self.FW_SD_FILENAME_IN_WORKDIR)
+                    os.replace(staged_sd, sd_path)
                 self.firmware_name = name
                 self.firmware_sha = sha
                 self._reset_frame_cache()
                 self._launch()
+                self._save_firmware_selection()
         finally:
             self._end_action()
         provenance = self.provenance_of(sha)
@@ -1474,6 +1552,10 @@ def main():
     p.add_argument("--firmware-dir",type=Path,
                    help="read-only folder of candidate firmware images; "
                         "defaults to the directory of --flash")
+    p.add_argument("--persistent-media-dir", type=Path,
+                   help="opt-in R/W guest flash.bin and sd.img directory on "
+                        "a separately mounted persistent volume; refuses partial "
+                        "or wrong-sized saved media")
     p.add_argument("--host",default="127.0.0.1")
     p.add_argument("--port",type=int,default=8784)
     p.add_argument("--enable-power-button",action="store_true",
@@ -1486,6 +1568,10 @@ def main():
     if not rom_dir.is_dir():
         p.error(f"--rom-dir {rom_dir} is not an existing directory")
     args.rom_dir=rom_dir
+    if args.persistent_media_dir is not None:
+        args.persistent_media_dir = args.persistent_media_dir.resolve(strict=True)
+        if not args.persistent_media_dir.is_dir():
+            p.error("--persistent-media-dir must be an existing directory")
     firmware_dir=(args.firmware_dir or args.flash.parent).resolve()
     if not firmware_dir.is_dir():
         p.error(f"--firmware-dir {firmware_dir} is not an existing directory")

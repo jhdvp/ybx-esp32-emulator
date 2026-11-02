@@ -79,12 +79,22 @@ POST_PSRAM_CHAIN = (
     "experiments/0069-ssd1677-waveform-sleep-v2.patch",
     "experiments/0071-s3-wifi-radio-stage1.patch",
 )
+# 0104: native Factory GT911 I2C + CrossPoint EPUB/FAT integrity and inkMOD
+# GPIO3 EXT1 DSLEEP wake qualify these six already-byte-reproducible patches.
+RTC_POWER_CHAIN = (
+    "experiments/0096-s3-rtc-sleep-registers-explicit-wakeup.patch",
+    "experiments/0097-s3-rtc-explicit-deep-wakeup-dig-reset.patch",
+    "experiments/0098-gt911-ignore-short-reset-pulse.patch",
+    "experiments/0098-i2c-gt911-readonly-qom-telemetry.patch",
+    "experiments/0100-rtc-ext1-gpio-level-wakeup.patch",
+    "experiments/0101-x4pro-power-button-gpio3-rtc3-reset-retention.patch",
+)
 X4PRO_FULL_CHAIN = (X4PRO_0042_CHAIN + TELEMETRY_CHAIN + PSRAM_CHAIN
-                    + POST_PSRAM_CHAIN)
+                    + POST_PSRAM_CHAIN + RTC_POWER_CHAIN)
 AUDITED_CHAINS = (X4PRO_0042_CHAIN, X4PRO_FULL_CHAIN)
 CHAIN_TAIL = {X4PRO_0042_CHAIN: "experiments/0042-s3-epd-busy-gpio-pcpu-irq.patch",
               X4PRO_FULL_CHAIN:
-                  "experiments/0071-s3-wifi-radio-stage1.patch"}
+                  "experiments/0101-x4pro-power-button-gpio3-rtc3-reset-retention.patch"}
 MODEL_TEST_0043 = HERE / "experiments" / "0043-agent-epd-busy-model-test.c"
 
 # 0042 must expose GPIO_PCPU_INT: ESP-IDF S3 gpio_ll_get_intr_status() reads
@@ -100,7 +110,7 @@ X4PRO_MACHINE = "ybx-x4pro-epd"
 # image ybx-qemu-builder:20261029 with the QEMU_BRINGUP.md configure flags.
 # Guardrails and build_reproducible_qemu.sh compare (not just record) against it.
 EXPECTED_BINARY_SHA256 = (
-    "f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236")
+    "7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc")
 FACTORY_FLASH_SHA256 = (
     "206ed9661bd71477d1a54397c5a2cfe490179a3f59ab094f1e7421745c609523"
 )
@@ -158,10 +168,14 @@ def patch_paths(names, root: Path | None = None) -> list[Path]:
 def chain_touched_files(names, root: Path | None = None) -> set[str]:
     """Paths the chain rewrites or adds; the audit allowlist for tree status."""
     touched: set[str] = set()
-    pattern = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
+    git_pattern = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
+    unified_pattern = re.compile(r"^--- a/(\S+)\n\+\+\+ b/(\S+)$",
+                                 re.MULTILINE)
     for path in patch_paths(names, root):
-        for match in pattern.finditer(path.read_text(errors="replace")):
-            touched.add(match.group(2))
+        data = path.read_text(errors="replace")
+        for pattern in (git_pattern, unified_pattern):
+            for match in pattern.finditer(data):
+                touched.add(match.group(2))
     return touched
 
 
