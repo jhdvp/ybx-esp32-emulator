@@ -29,6 +29,7 @@ reports; each row links to the evidence.
 | Original CrossPoint 1.6.5 | Boots, mounts SDMMC and reports healthy heap/PSRAM without observed panic in bounded test |
 | Original inkMOD 1.1.10 | **BLOCKER**: early `Core 1 LoadProhibited` PC `0x4204541c`, EXCVADDR `0x60f0`; persists with `-nic none` and with QEMU virtual NIC. Do not switch 8784 while unresolved |
 | Release safety | Upstream commit + official checksum lock, verified release `--check` gate, private-only QMP and browser, fresh guest copies; QEMU source and binary not committed to this repo |
+| Browser/session parity | [0108](tools/ybx-system-emu/experiments/0108-einkqemu11-browser-session-20261102.md): private loopback session with guest-persistent Flash/SD, ROM fixed to verified upstream, firmware picker, native UC8279 PNG/touch, opt-in NAT/Power; old 8784 unchanged |
 | Acceptance report | [0107](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md) |
 
 The strategic migration target is the official QEMU 11.1.2 tree, not another hand-ported QEMU 9.2 Wi-Fi stack. The old signed 32-patch tree remains available only for stable 8784, inkMOD acceptance and rollback until the newer emulator reaches feature parity.
