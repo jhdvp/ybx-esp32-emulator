@@ -1,0 +1,16 @@
+{
+  "project": "serialx/eink-qemu",
+  "repository": "https://github.com/serialx/eink-qemu",
+  "release": "0.9.2",
+  "release_date": "2026-10-25",
+  "source_commit_main_verified_2026_11_02": "d1b24a5fbc1bbae7ea31075460f63cd4c989c1dc",
+  "qemu_version": "11.1.2",
+  "license": "GPL-2.0-or-later (QEMU); individual MAC/AP components include MIT-origin code",
+  "linux_arm64_archive": "eink-qemu-xtensa-softmmu-0.9.2-aarch64-linux-gnu.tar.xz",
+  "linux_arm64_archive_sha256": "6adc72273fd6fea75407ee312af8f21b9c83e67d88720515d56068e71e7f6300",
+  "linux_arm64_extracted_binary_sha256": "8fce2150c091ceb7b644ac7603169620e9fc171ebaa37bed8aece2a457dcbd6a",
+  "macos_arm64_archive_sha256": "267b73020a79d5757de877ddc0eab89b5c95a7ffe04a58e9eae283bc71d6f41d",
+  "release_url": "https://github.com/serialx/eink-qemu/releases/tag/0.9.2",
+  "status": "experimental preview; 8784 remains on last known-good QEMU until inkMOD 1.1.10 panic fixed",
+  "note": "Exact hashes validated against original upstream checksum.sha256. No upstream binaries or device firmware committed to this repository."
+}

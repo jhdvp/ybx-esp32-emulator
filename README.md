@@ -11,7 +11,7 @@
 ![Platform](https://img.shields.io/badge/host-macOS%20%2B%20Docker-586D70?style=flat-square)
 ![Guest](https://img.shields.io/badge/guest-ESP32--S3%20%2F%20ESP32--C3-567965?style=flat-square)
 [![Host checks](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml/badge.svg)](https://github.com/jhdvp/ybx-esp32-emulator/actions/workflows/host-tests.yml)
-![Tests](https://img.shields.io/badge/local%20tests-949%20pass%20%7C%2010%20skip-567965?style=flat-square)
+![Tests](https://img.shields.io/badge/local%20tests-957%20pass%20%7C%2010%20skip-567965?style=flat-square)
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20GPL--2.0%20patches-567965?style=flat-square)](LICENSING.md)
 
 [**Screenshots**](#real-firmware-screenshots) · [**Hardware status**](#emulation-status) · [**Get started**](#getting-started) · [**Architecture**](#how-it-works) · [**Roadmap**](#roadmap) · [**Status snapshot**](STATUS.md)
@@ -46,6 +46,15 @@
 
 </details>
 
+
+## QEMU 11.1.2 migration preview (0107)
+
+Our **next-generation base** is [serialx/eink-qemu](https://github.com/serialx/eink-qemu) **0.9.2 (QEMU 11.1.2)**, pinned to the upstream source commit and official binary checksums in [`eink-qemu-0.9.2.lock.json`](tools/ybx-system-emu/third_party/eink-qemu-0.9.2.lock.json). This replaces the plan to build another ESP32-S3 Wi-Fi MAC from scratch on our old QEMU 9.2.x fork.
+
+The **experimental, independent** browser preview runs at **`http://127.0.0.1:8810/`** on the Mac, using the new native QMP framebuffer and GT911 input adapter. Start it from a verified official release with `bash tools/ybx-system-emu/start_eink_qemu11_preview.sh --check` and then `bash tools/ybx-system-emu/start_eink_qemu11_preview.sh` (see [0107 evidence and prerequisites](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md)). With original, unmodified **CrossPoint 2.0.0rc**, it scans **three virtual APs**, associates with `PICSimLabWifi`, receives DHCP address **`10.0.2.15`**, and serves a genuine HTTP 200 response over QEMU NAT; tested through real browser touch → QMP → guest networking.
+
+> [!WARNING]
+> **The production `192.168.10.239:8784` has NOT been replaced yet.** Original **inkMOD 1.1.10** currently crashes on the upstream QEMU11 candidate (`Core 1 LoadProhibited`, PC `0x4204541c`, `EXCVADDR=0x60f0`), both with and without a NIC. We will not lose inkMOD/RTC functionality or the stable saved flash/SD just to claim a newer QEMU version. See [the migration acceptance report](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md).
 
 ## Emulation status
 
