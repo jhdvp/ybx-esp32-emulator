@@ -1,0 +1,11 @@
+# Native QEMU 11.1.2 binary from serialx/eink-qemu release, Linux ARM64.
+# Build with: docker build --platform linux/arm64 -f this-file -t ybx-eink-qemu-runtime:0.9.2 .
+# Reuse the existing pinned YBX offline QEMU builder for libraries/tooling.
+# The official release binary is mounted at runtime and SHA verified by launcher;
+# NO downloads or proprietary flash blobs are baked into this image.
+FROM ybx-qemu-builder:20261029
+RUN apt-get update -qq \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+       libpng16-16t64 libsdl2-2.0-0 libx11-6 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
