@@ -17,20 +17,30 @@ class ProbeTests(TestCase):
     def test_ready_requires_both_firmware_endpoints(self, bridge, guest):
         result = probe.run(8820, "ybx-eink-qemu11-8820", 18080)
         self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "passed")
         self.assertEqual(guest.call_count, 2)
 
     @patch.object(probe, "guest_probe", return_value={"error_type": "ConnectionResetError"})
     @patch.object(probe, "bridge_probe", return_value={
         "qmp_running": True, "screen_dimensions": [480, 800]})
-    def test_qmp_running_cannot_mask_broken_guest_network(self, bridge, guest):
-        result = probe.run(8820, "ybx-eink-qemu11-8820", 18080)
-        self.assertFalse(result["ok"])
+    def test_expected_file_transfer_fails_on_broken_guest_http(self, bridge, guest):
+        result = probe.run(8820, "ybx-eink-qemu11-8820", 18080, True)
+        self.assertIs(result["ok"], False)
+        self.assertEqual(result["status"], "failed")
         self.assertEqual(result["guest_plugin_js"]["error_type"], "not_checked")
         self.assertEqual(guest.call_count, 1)
+
+    @patch.object(probe, "guest_probe", return_value={"error_type": "ConnectionResetError"})
+    @patch.object(probe, "bridge_probe", return_value={
+        "qmp_running": True, "screen_dimensions": [480, 800]})
+    def test_catalog_mode_http_absence_is_not_failure(self, bridge, guest):
+        result = probe.run(8820, "ybx-eink-qemu11-8820", 18080)
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], "inconclusive")
 
     @patch.object(probe, "guest_probe")
     @patch.object(probe, "bridge_probe", return_value={"qmp_running": False})
     def test_unbooted_guest_is_not_probed(self, bridge, guest):
-        result = probe.run(8820, "ybx-eink-qemu11-8820", 18080)
+        result = probe.run(8820, "ybx-eink-qemu11-8820", 18080, True)
         self.assertFalse(result["ok"])
         guest.assert_not_called()
