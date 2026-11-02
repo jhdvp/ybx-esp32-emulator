@@ -53,6 +53,12 @@ Our **next-generation base** is [serialx/eink-qemu](https://github.com/serialx/e
 
 The **experimental, independent** browser preview runs at **`http://127.0.0.1:8810/`** on the Mac, using the new native QMP framebuffer and GT911 input adapter. Start it from a verified official release with `bash tools/ybx-system-emu/start_eink_qemu11_preview.sh --check` and then `bash tools/ybx-system-emu/start_eink_qemu11_preview.sh` (see [0107 evidence and prerequisites](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md)). With original, unmodified **CrossPoint 2.0.0rc**, it scans **three virtual APs**, associates with `PICSimLabWifi`, receives DHCP address **`10.0.2.15`**, and serves a genuine HTTP 200 response over QEMU NAT; tested through real browser touch → QMP → guest networking.
 
+| Native ESP32-S3 Wi-Fi scan | Connected AP, DHCP + guest HTTP |
+|:---:|:---:|
+| <img src="assets/screenshots/11-qemu11-virtual-wifi-scan.png" width="240" alt="QEMU 11.1.2: original CrossPoint scanning finds three virtual APs"> | <img src="assets/screenshots/12-qemu11-virtual-wifi-http.png" width="240" alt="Original CrossPoint connected to PICSimLabWifi, DHCP 10.0.2.15 and native guest HTTP"> |
+
+<sub>Both screenshots are actual upstream QEMU 11.1.2 UC8279 framebuffer captures from unmodified CrossPoint 2.0.0rc, acquired through QMP. No recreated HTML device UI.</sub>
+
 > [!WARNING]
 > **The production `192.168.10.239:8784` has NOT been replaced yet.** Original **inkMOD 1.1.10** currently crashes on the upstream QEMU11 candidate (`Core 1 LoadProhibited`, PC `0x4204541c`, `EXCVADDR=0x60f0`), both with and without a NIC. We will not lose inkMOD/RTC functionality or the stable saved flash/SD just to claim a newer QEMU version. See [the migration acceptance report](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md).
 
