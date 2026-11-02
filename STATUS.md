@@ -13,10 +13,25 @@ reports; each row links to the evidence.
 | Live binary SHA-256 | `7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc` (verified inside container 8784) |
 | Patch chain | 20 audited X4 Pro patches + 0042 + 0037 + 0051 + 0043 + **0068** + **0069** + **0071** (32 patches; 0096–0101 now included) |
 | Rollback trees | Old `qemu-wf-radio-20261031` (SHA `f65db0a7…`) retained; additionally: `qemu-psram-fix-20261031` (`7e554ba9…`, 0068 only), `qemu-0043-agent-audit-20261030` (`f07744d9…`, pre-0068) |
-| Host tests | 959 tests (949 pass, 10 skip; local companion firmware/media present, 2026-11-02) |
+| Host tests | 967 tests (957 pass, 10 skip; local companion firmware/media present, 2026-11-02) |
 | Deployed release QEMU | `~/.local/state/ybx-emulator-upstream/qemu-rtc-power-20261102`, SHA-256 `7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc` (pinned 32-patch chain; running on 8784 after verified cutover) |
 | Live release verification (14/14 checks PASS) | Pinned binary, signed 32-patch manifest, 31 source files and factory Home `e79c2ad5…` checked. Private `8801` persistent-media restart succeeded; see 0105. |
 | Clean-room build | ✅ verified 2026-10-31: the 26-patch chain built from base `febae18` reproduced the former release binary byte-identically (`f65db0a7…`, `rc=0`) |
+
+## Next-generation preview — official QEMU 11.1.2, eink-qemu 0.9.2
+
+| Item | Verified status |
+|---|---|
+| Upstream source | `serialx/eink-qemu` main `d1b24a5fbc1bbae7ea31075460f63cd4c989c1dc`; QEMU **11.1.2**; official release **0.9.2** |
+| Official Linux ARM64 binary | Published archive SHA `6adc7227…7f6300` and extracted `qemu-system-xtensa` SHA `8fce2150…7dcbd6a` independently verified |
+| Running independent preview | `127.0.0.1:8810` (interactive real 480×800 QMP screenshot and GT911 touches), Docker `ybx-eink-qemu11-8810`; **not production 8784** |
+| Original CrossPoint 2.0.0rc | Native X4 Pro firmware boots and renders; QMP GT911 input navigates Home → File Transfer → Join a Network; 3 virtual APs; connected `PICSimLabWifi` with DHCP `10.0.2.15`; HTTP 200 from real guest server via slirp hostfwd |
+| Original CrossPoint 1.6.5 | Boots, mounts SDMMC and reports healthy heap/PSRAM without observed panic in bounded test |
+| Original inkMOD 1.1.10 | **BLOCKER**: early `Core 1 LoadProhibited` PC `0x4204541c`, EXCVADDR `0x60f0`; persists with `-nic none` and with QEMU virtual NIC. Do not switch 8784 while unresolved |
+| Release safety | Upstream commit + official checksum lock, verified release `--check` gate, private-only QMP and browser, fresh guest copies; QEMU source and binary not committed to this repo |
+| Acceptance report | [0107](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md) |
+
+The strategic migration target is the official QEMU 11.1.2 tree, not another hand-ported QEMU 9.2 Wi-Fi stack. The old signed 32-patch tree remains available only for stable 8784, inkMOD acceptance and rollback until the newer emulator reaches feature parity.
 
 ## What the emulator can do today
 

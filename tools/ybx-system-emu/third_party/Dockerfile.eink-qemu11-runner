@@ -1,0 +1,11 @@
+# Isolated aarch64 user-space libraries for the PINNED official eink-qemu binary.
+# QEMU is never downloaded, bundled or installed by this image.
+# Build on the Mac with:
+# docker build --platform linux/arm64 --network default \
+#   -f tools/ybx-system-emu/third_party/Dockerfile.eink-qemu11-runner \
+#   -t ybx-eink-qemu-runner:20261102 .
+FROM ybx-qemu-builder:20261029
+RUN apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libpng16-16 libsdl2-2.0-0 libx11-6 && \
+    rm -rf /var/lib/apt/lists/*
