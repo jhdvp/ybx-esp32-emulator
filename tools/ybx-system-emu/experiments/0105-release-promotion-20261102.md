@@ -1,0 +1,34 @@
+# 0105 — signed RTC/GT911/Power QEMU promotion and guest-media persistence
+
+Date: 2026-11-02. Use this record for the promotion and explicit rollback. Nothing in this source-only report asserts that the running public bridge was switched; **verify `8784` state and Docker mount after the actual cutover**.
+
+## Promoted source/binary candidate
+
+- Canonical, separate source/tree: `~/.local/state/ybx-emulator-upstream/qemu-rtc-power-20261102`, SHA-256 of `build-ybx/qemu-system-xtensa`: **`7b729fba1ceefdc67a55dc9ddd6d359699e16174a52d741ea243849c35e2accc`**.
+- Audited main chain expanded from 26 to **32** patches by appending original experimental patches 0096 (RTC sleep), 0097 (DSLEEP digital reset), two 0098 (GT911 reset-pulse + I²C telemetry), 0100 (EXT1 wake), and 0101 (GPIO3 virtual Power routing). Existing 26-patch release remains in `~/.local/state/ybx-emulator-upstream/qemu-wf-radio-20261031`, SHA **`f65db0a7e6940a6c08ea2ffe4e8653227e8fbea70b25f4c695fc7a2de6a68236`**. Never overwrite/delete it.
+- Updated `patches/composition-manifest.sha256`, source-accounting for both `diff --git` and plain unified diffs, and deterministic binary guard. Audited offline composition had **32 patches, 31 source files, zero failures** and 31/31 source files match the accepted experimental tree. The prior 0103 clean-room build had independently reproduced the exact new binary (1544 Ninja steps).
+- `verify_reproducible_build.sh --qemu-bin <canonical> --boot` returned **0**: passed SHA-256, signed manifest and original Factory SSD1677 Home SHA `e79c2ad5f2b60b16fe3f20625742d5f1343f5785552d1b32c11f33c42a874672`, 4 true EPD frames, 384000 RAM writes. No fake frame.
+
+## Existing `8784` guest snapshot and rollback evidence
+
+The original `ybx-x4pro-browser-8784` was running with the old QEMU mounted read-only as `/qemu`, the tools directory as `/tests:ro`, and factory QA, firmware, ROM read-only mounts; Docker published **`192.168.10.239:8784`** (unauthenticated, trusted LAN only). Old Docker inspect/command/ports/mounts stored under `artifacts/ybx-esp32-system-emulation-20261029/promotion-0105-20261102/old-8784-*`.
+
+Guest runtime images were independently copied out of the running container to **separate backup files** in that promotions folder: `pre-upgrade-guest-flash.bin` SHA `b1cea3eccc0eb584c5fe08c860fe2e93d973ef1cc34a38913812802024afca44` (16MiB), `pre-upgrade-guest-sd.img` SHA `70cfe42df8805f412da5caebfdf49b8797552d3fc2259094f0bed5ad4624fd21` (128MiB). Rehashed from inside the running container after copying: both match. The source factory firmware SHA `206ed966…9523` is the *template*; running guest flash is legitimately modified by the emulator. Do not discard the backups to make the provenance label look cleaner. This snapshot preserves on-disk state, **not volatile CPU/RAM GUI selection**.
+
+## New opt-in persistence on the browser bridge
+
+The previous browser bridge unconditionally copied guest R/W flash and SD into a temporary directory. Restart/recreate erased all progress and cache. `YBX_BROWSER_PERSIST_DIR=/absolute/mac/directory` now opt-in mounts a host directory to Docker `/persist:rw` and passes `--persistent-media-dir /persist`. The bridge accesses `flash.bin` and `sd.img` directly from this persistent directory (while original Factory input files remain read-only). If neither exists, initialize once from the input images; if one is missing, either size differs, or a symlink is present: **refuse to start without overwriting data**. Firmware picker performs atomic replacement on the same persistent volume. `firmware-selection.json` stores the chosen firmware's display name and source SHA for correct picker labeling after container restart. `/api/state.media` advertises persistence and *initial snapshot* SHA for flash and SD; it does not pretend those snapshots are current after guest writes.
+
+Private **`127.0.0.1:8801`** was started using the exact saved original `8784` flash/SD copies and the candidate QEMU. It rendered original Factory Home SHA `e79c2ad5…` and returned `ready=true`; `media.persistent=true`, snapshot hashes matched before actual guest writes. Factory Library via real GT911 tap rendered its real Library frame. The private container was then stopped and recreated with the same host persistent volume; its `/api/state.media.initial_guest_flash_sha256` and `.initial_guest_sd_sha256` matched the images on the Mac at restart, and Factory Home SHA again matched. The host SD image did **not** reset to pristine on restart. Independent QA of full-size FAT and original CrossPoint EPUB/cache behavior passed previously in 0104.
+
+Private Power tests (0101–0104) demonstrate guest EXT1 DSLEEP and inkMOD navigation, but the production `8784` Power UI is still **disabled by default**. No physical Power button proof, real Wi-Fi association/DHCP/TLS, or exact E-Ink waveform fidelity.
+
+## Cutover and rollback protocol
+
+1. Before replacing the stable bridge, confirm backup SHA-256 and keep the source old QEMU checkout untouched. Create a separate `persistent-8784` host directory with `flash.bin`/`sd.img` byte copies of the saved original guest images. Do NOT replace factory QA files or modify user EDI/firmware folders.
+2. Start via `YBX_QEMU_ROOT=~/.local/state/ybx-emulator-upstream/qemu-rtc-power-20261102`, `YBX_BROWSER_PERSIST_DIR=<absolute persistent-8784 host directory>`, `YBX_BROWSER_BIND_ADDRESS=192.168.10.239`, `YBX_BROWSER_PORT=8784`, and `YBX_BROWSER_POWER_BUTTON=0` (LAN power remains off). Only the named emulator container is stopped/recreated.
+3. Immediately verify `/api/state` ready, actual ROM SHA, expected Factory Home SHA after guest boot, `/api/state.media.persistent=true`, initial guest SD/flash hashes matching the backed-up snapshot, and the real on-disk `/persist/flash.bin` and `/persist/sd.img` mounts. Verify original 8784 LAN access and guest UART. Record Docker container ID, QEMU hash and resulting SHA and Git commit.
+4. Rollback on *any* failure: stop only `ybx-x4pro-browser-8784`; restore the **old** QEMU tree, previous bridge and previous Docker bind/mount/command, using the untouched pre-upgrade image backups; do not delete candidate source or sidecar. On older bridge, to restore saved media rather than reverting to pristine, use an isolated QA folder containing copies of the saved guest flash/SD with expected filenames (and original ROM), noting that the older bridge has no host persistence. Verify the old Home frame and 8784 HTTP after rollback.
+5. Do not claim firmware/ROM picker selections are fully persisted unless tested. Explicit firmware-selection sidecar is implemented and separately unit-tested; ROM picker uses a transient ROM copy and may revert to the launch ROM on a full container restart (documented limitation).
+
+Never claim 8784 was updated merely because this file or the PR exists; verify the running instance itself. Preserve user/agent's existing uncommitted `0095` report in main.

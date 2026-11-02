@@ -232,7 +232,7 @@ class StageOneTests(SandboxMixin, unittest.TestCase):
 
 
 class ChainDefinitionTests(unittest.TestCase):
-    """The script's default chain must be the audited full 23-patch chain."""
+    """The script's default chain must be the audited full 32-patch chain."""
 
     def test_default_invocation_targets_full_chain(self):
         text = SCRIPT.read_text()
@@ -243,7 +243,7 @@ class ChainDefinitionTests(unittest.TestCase):
     def test_default_chain_needs_the_full_patch_set(self):
         """With an empty patch-root the default chain refuses to compose and
         names every required file — proving the default is the full audited
-        23-patch chain, 0051 included (checked before any fetch)."""
+        32-patch chain, 0051 included (checked before any fetch)."""
         with TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "empty").mkdir()
@@ -333,7 +333,7 @@ class StageTwoBuildTests(SandboxMixin, unittest.TestCase):
 @unittest.skipUnless(os.environ.get("YBX_RUN_REAL_COMPOSE") == "1"
                      and QEMU_SRC.is_dir(),
                      "set YBX_RUN_REAL_COMPOSE=1 (needs the local QEMU object "
-                     "source) to compose the real 23-patch chain")
+                     "source) to compose the real 32-patch chain")
 class RealChainComposeTests(unittest.TestCase):
     """Opt-in: full-chain dry run against the real pinned base commit."""
 

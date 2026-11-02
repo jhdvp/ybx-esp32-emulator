@@ -2,7 +2,7 @@
 """Fail-closed, read-only 0101 research QEMU source composition verifier.
 
 Recomposes the audited X4 Pro patch chain from pinned upstream Git objects,
-then applies the 0096..0101 research patch suffix in a disposable checkout.
+including the 0096..0101 RTC/Power suffix in the audited full chain.
 Compares all modified/added source bytes to the known experimental QEMU tree,
 never writes to that tree or the live browser. Does NOT rebuild the binary.
 """
@@ -78,12 +78,15 @@ def verify(*, upstream: Path, research: Path, tools_dir: Path, out: Path) -> dic
         if (scratch / 'composition-manifest.sha256').read_bytes() != manifest.read_bytes():
             raise RuntimeError('Accepted base patch manifest differs')
         checkout = scratch / 'qemu-compose'
-        patches = []
-        for name in EXPERIMENTAL_SUFFIX:
-            patch = patch_dir / name
-            run_checked(['git', '-C', str(checkout), 'apply', '--check', str(patch)])
-            run_checked(['git', '-C', str(checkout), 'apply', str(patch)])
-            patches.append({'name': name, 'sha256': sha256(patch)})
+        # 0105: the audited full chain now already includes RTC/GT911/Power.
+        # Verify complete ordered membership; never apply the suffix twice.
+        from check_qemu_patch_composition import parse_manifest
+        signed_chain = parse_manifest(manifest)['chain']
+        suffix = ['experiments/' + x for x in EXPERIMENTAL_SUFFIX]
+        if signed_chain[-len(suffix):] != suffix:
+            raise RuntimeError('Audited full chain lacks ordered Power suffix')
+        patches = [{'name': name, 'sha256': sha256(patch_dir / name)}
+                   for name in EXPERIMENTAL_SUFFIX]
 
         paths = changed_source_paths(research)
         if not paths:

@@ -18,7 +18,8 @@ from serve_x4pro_browser import (KNOWN_FACTORY_IMAGES, PAGE, BadRequestError,
                                  GuestMissingError, RomNotFoundError,
                                  TapQueueFullError, check_touch, etag_matches,
                                  guest_ready_for_touch, make_handler,
-                                 not_modified_since, sha256_file, W, H)
+                                 not_modified_since, prepare_guest_media,
+                                 sha256_file, W, H)
 from http.server import ThreadingHTTPServer
 
 FACTORY_ROM_SHA = ("5b950be93a30610322a3b46049e4095cdda04f33f09fa13a9a"
@@ -74,6 +75,93 @@ def rom_guest(**overrides):
 def make_rom_file(guest, name, payload):
     (guest.rom_dir / name).write_bytes(payload)
     return hashlib.sha256(payload).hexdigest()
+
+
+class PersistentMediaTests(unittest.TestCase):
+    def test_new_volume_is_initialized_once_then_resumed_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            flash, sd = root / "factory.bin", root / "pristine.img"
+            flash.write_bytes(b"a" * 256)
+            sd.write_bytes(b"b" * 2048)
+            persist = root / "persist"
+            persist.mkdir()
+            live_flash, live_sd = prepare_guest_media(flash, sd, root, persist)
+            self.assertEqual(live_flash.read_bytes(), flash.read_bytes())
+            self.assertEqual(live_sd.read_bytes(), sd.read_bytes())
+            live_flash.write_bytes(b"c" * 256)
+            live_sd.write_bytes(b"d" * 2048)
+            next_flash, next_sd = prepare_guest_media(flash, sd, root, persist)
+            self.assertEqual((live_flash, live_sd), (next_flash, next_sd))
+            self.assertEqual(next_flash.read_bytes(), b"c" * 256)
+            self.assertEqual(next_sd.read_bytes(), b"d" * 2048)
+            self.assertEqual(flash.read_bytes(), b"a" * 256)
+            self.assertEqual(sd.read_bytes(), b"b" * 2048)
+
+    def test_partial_persisted_volume_refused_without_reinitialization(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            flash, sd = root / "factory.bin", root / "pristine.img"
+            flash.write_bytes(b"a" * 256)
+            sd.write_bytes(b"b" * 2048)
+            persist = root / "persist"
+            persist.mkdir()
+            (persist / "flash.bin").write_bytes(b"c" * 256)
+            with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                prepare_guest_media(flash, sd, root, persist)
+            self.assertFalse((persist / "sd.img").exists())
+            self.assertEqual((persist / "flash.bin").read_bytes(), b"c" * 256)
+
+    def test_wrong_size_persisted_flash_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            flash, sd = root / "factory.bin", root / "pristine.img"
+            flash.write_bytes(b"a" * 256)
+            sd.write_bytes(b"b" * 2048)
+            persist = root / "persist"
+            persist.mkdir()
+            (persist / "flash.bin").write_bytes(b"c" * 257)
+            (persist / "sd.img").write_bytes(b"b" * 2048)
+            with self.assertRaisesRegex(RuntimeError, "size mismatch"):
+                prepare_guest_media(flash, sd, root, persist)
+
+    def test_firmware_label_restored_from_persistent_sidecar(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            guest = browser_guest(persistent_media_dir=root)
+            guest.firmware_name = "alternate.bin"
+            guest.firmware_sha = "a" * 64
+            guest._save_firmware_selection()
+            restarted = browser_guest(persistent_media_dir=root)
+            restarted.firmware_dir = root
+            restarted._restore_firmware_selection()
+            self.assertEqual(restarted.firmware_name, "alternate.bin")
+            self.assertEqual(restarted.firmware_sha, "a" * 64)
+
+    def test_symlinked_persistent_disk_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            flash, sd = root / "factory.bin", root / "pristine.img"
+            flash.write_bytes(b"a" * 256)
+            sd.write_bytes(b"b" * 2048)
+            persist = root / "persist"
+            persist.mkdir()
+            (persist / "flash.bin").symlink_to(flash)
+            with self.assertRaisesRegex(RuntimeError, "symlinks"):
+                prepare_guest_media(flash, sd, root, persist)
+            self.assertEqual(flash.read_bytes(), b"a" * 256)
+
+    def test_no_persist_dir_uses_throwaway_workdir(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            flash, sd = root / "factory.bin", root / "pristine.img"
+            flash.write_bytes(b"a" * 256)
+            sd.write_bytes(b"b" * 2048)
+            work = root / "work"
+            work.mkdir()
+            a, b = prepare_guest_media(flash, sd, work, None)
+            self.assertEqual(a.parent, work)
+            self.assertEqual(b.parent, work)
 
 
 class BrowserTouchTests(unittest.TestCase):

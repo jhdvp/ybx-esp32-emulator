@@ -18,7 +18,7 @@ usage() {
 Usage: build_x4pro_power_clean_room.sh --work-dir EMPTY_DIRECTORY --build
        [--qemu-src UPSTREAM_GIT_DIRECTORY] [--jobs 1..N] [--image TAG]
 
-Recomposes pinned 26-patch QEMU + research 0096..0101, copies only three
+Recomposes pinned audited 32-patch QEMU (including 0096..0101), copies three
 locally pinned external subproject Git trees, and builds in offline Docker.
 No network access. No deployment or update of browser 8784/8794.
 The --work-dir must exist and must not already contain a compose subdir.
@@ -87,9 +87,11 @@ for file in \
 do
   patch="$HERE/experiments/$file"
   [ -f "$patch" ] || die "missing patch $patch"
-  git -C "$TREE" apply --check "$patch"
-  git -C "$TREE" apply "$patch"
-  echo "applied $file"
+  # The signed full chain includes this suffix as of 0105; a duplicate
+  # git apply would corrupt (or fail on) an already composed release tree.
+  grep -Fxq "experiments/$file" "$OUT/composition-manifest.sha256" \
+    || die "release manifest missing $file"
+  echo "signed in full release chain $file"
 done
 
 # These subprojects cannot be fetched by the offline container. Copy from the

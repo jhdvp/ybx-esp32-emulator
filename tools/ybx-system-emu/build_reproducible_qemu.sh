@@ -42,7 +42,7 @@ Usage: $0 [--build] [--qemu-src DIR] [--work-dir DIR] [--image TAG]
   --verify-binary      after --build, compare the produced qemu-system-xtensa
                        against the pinned chain SHA (fail-closed)
   --chain SPEC         audited chain selection passed to the checker
-                       (default: full = 23 patches ending in 0051)
+                       (default: full = audited 32-patch chain ending in 0101)
   --skip-manifest-compare  compose without diffing against the checked-in
                        manifest. Required for --chain 0042 (that manifest
                        signs the FULL chain); such a run is a shorter audit,
