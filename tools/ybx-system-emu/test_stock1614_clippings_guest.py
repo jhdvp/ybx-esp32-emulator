@@ -69,6 +69,29 @@ class StockGuestVerdictTests(unittest.TestCase):
         self.assertTrue(guest_round_trip_valid(
             data,"different",required_progress_puts=2))
 
+    def test_wifi_stall_is_not_reported_as_success(self):
+        with tempfile.TemporaryDirectory() as work:
+            p = Path(work)
+            guest = StockClippingsGuest(
+                preview_port=8896, qmp_port=8897,
+                evidence=p / 'ledger.json', out=p / 'screens', tap_delay=0.7)
+            guest.out.mkdir()
+            stage = {'current': 'sync'}
+            def tap(where, label):
+                if label == 'Sync Progress':
+                    stage['current'] = 'wifi'
+            guest.tap = tap
+            guest.open_more = lambda: None
+            guest.screen_is = lambda name: name == stage['current']
+            guest.capture = lambda name: 'test-sha'
+            guest.get = lambda path: b'{"radio_connected":null}'
+            with self.assertRaisesRegex(RuntimeError, 'did not leave Wi-Fi picker'):
+                guest.sync_clippings()
+            import json
+            verdict = json.loads((guest.out / 'blocked-result.json').read_text())
+            self.assertEqual(verdict['status'], 'blocked_guest_wifi_input')
+            self.assertEqual(verdict['stage'], 'PICSimLabWifi picker')
+
     def test_refuses_production_and_non_qemu_ports(self):
         with tempfile.TemporaryDirectory() as work:
             p=Path(work)
