@@ -7,6 +7,7 @@ private writable copies. It does not connect to the LAN or touch stable 8784.
 from __future__ import annotations
 
 import argparse
+import shutil
 import hashlib
 import json
 import re
@@ -102,8 +103,8 @@ def run(args) -> dict:
     args.output.mkdir(parents=True)
     flash = args.output / "guest-flash.bin"
     sd = args.output / "guest-sd.img"
-    flash.write_bytes(args.flash.read_bytes())
-    sd.write_bytes(args.sd.read_bytes())
+    shutil.copyfile(args.flash, flash)
+    shutil.copyfile(args.sd, sd)
     baseline = {"flash": sha256(args.flash), "sd": sha256(args.sd)}
     qmp_sock = args.output / "qmp.sock"
     uart = args.output / "cdc-uart.log"
