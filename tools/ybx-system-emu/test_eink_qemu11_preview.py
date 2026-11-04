@@ -103,7 +103,6 @@ class PreviewV11Tests(unittest.TestCase):
         result = subprocess.run(['bash', '-n', str(START)], capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-
     def test_approved_binaries_allow_exact_official_and_gpio21_builds_only(self):
         approved = native_browser.APPROVED_BINARY_SHAS
         self.assertIn(native_browser.KNOWN_BINARY_SHA, approved)
@@ -129,6 +128,22 @@ class PreviewV11Tests(unittest.TestCase):
         self.assertNotIn('--network host', script)
         result = subprocess.run(["bash", "-n", str(start)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_restart_is_cold_boot_not_hardware_wakeup(self):
+        fake = Mock()
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        result = backend.restart_guest()
+        fake.call.assert_called_once_with('system_reset')
+        self.assertEqual(result['operation'], 'cold-boot-reset')
+        self.assertTrue(result['accepted'])
+        self.assertFalse(result['hardware_power_button_wake'])
+
+    def test_restart_failure_is_not_reported_as_success(self):
+        fake = Mock()
+        fake.call.side_effect = RuntimeError('QMP reset refused')
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        with self.assertRaisesRegex(RuntimeError, 'reset refused'):
+            backend.restart_guest()
 
     def test_http_status_never_invents_wifi_connected(self):
         b = bridge.Backend('/tmp/nonexistent', Mock())
