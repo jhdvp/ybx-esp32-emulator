@@ -94,17 +94,31 @@ class QMP:
             self.call('input-send-event', {'events': [
                 {'type': 'btn', 'data': {'button': 'left', 'down': False}}]})
 
+    def key(self, name, hold_ms=60):
+        # Native X4 Pro GPIO side keys (menus/pages); GT911 swipes are not emulated.
+        if name not in ('up', 'down', 'power'):
+            raise ValueError('unknown key')
+        if not (20 <= hold_ms <= 1500):
+            raise ValueError('key hold outside 20..1500ms')
+        self.call('qom-set', {'path': '/machine/x4pro-keys', 'property': name, 'value': True})
+        try:
+            time.sleep(hold_ms / 1000)
+        finally:
+            self.call('qom-set', {'path': '/machine/x4pro-keys', 'property': name, 'value': False})
+
 
 INDEX = '''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YBX · QEMU 11.1.2 Preview</title>
-<style>body{margin:0;background:#e9e9e6;color:#1d1d1d;font:14px system-ui,sans-serif}header{padding:16px 22px;background:#fafaf8;border-bottom:1px solid #ccc;display:flex;gap:16px;justify-content:space-between;align-items:center}h1{font-size:17px;margin:0}small{color:#777}main{display:grid;grid-template-columns:minmax(240px,480px) minmax(240px,420px);gap:24px;justify-content:center;padding:24px}#screen{width:100%;height:auto;image-rendering:auto;box-shadow:0 2px 14px #0002;border:1px solid #bbb;background:#fff;cursor:crosshair;touch-action:manipulation}pre{background:#181818;color:#eee;overflow:auto;white-space:pre-wrap;max-height:65vh;padding:15px;border-radius:6px;font:11px ui-monospace,monospace}section{min-width:0}.notice{padding:12px;background:#fff;border:1px solid #ccc;margin-bottom:12px;line-height:1.55}button{background:#222;color:#fff;padding:7px 14px;border:0;border-radius:5px;cursor:pointer}#info{font-family:ui-monospace,monospace;font-size:12px;line-height:2;overflow-wrap:anywhere}@media(max-width:750px){main{grid-template-columns:minmax(250px,480px);padding:12px;gap:14px}}</style>
-<header><div><h1>YBX / QEMU 11.1.2 · X4 Pro</h1><small>eink-qemu 0.9.2 • experimental • original firmware</small></div><button onclick="refresh()">Refresh</button></header>
+<style>body{margin:0;background:#e9e9e6;color:#1d1d1d;font:14px system-ui,sans-serif}header{padding:16px 22px;background:#fafaf8;border-bottom:1px solid #ccc;display:flex;gap:16px;justify-content:space-between;align-items:center}h1{font-size:17px;margin:0}small{color:#777}main{display:grid;grid-template-columns:minmax(240px,480px) minmax(240px,420px);gap:24px;justify-content:center;padding:24px}#screen{width:100%;height:auto;image-rendering:auto;box-shadow:0 2px 14px #0002;border:1px solid #bbb;background:#fff;cursor:crosshair;touch-action:manipulation}pre{background:#181818;color:#eee;overflow:auto;white-space:pre-wrap;max-height:65vh;padding:15px;border-radius:6px;font:11px ui-monospace,monospace}section{min-width:0}.notice{padding:12px;background:#fff;border:1px solid #ccc;margin-bottom:12px;line-height:1.55}button{background:#222;color:#fff;padding:7px 14px;border:0;border-radius:5px;cursor:pointer}.keys{display:flex;gap:6px;flex-wrap:wrap}#info{font-family:ui-monospace,monospace;font-size:12px;line-height:2;overflow-wrap:anywhere}@media(max-width:750px){main{grid-template-columns:minmax(250px,480px);padding:12px;gap:14px}}</style>
+<header><div><h1>YBX / QEMU 11.1.2 · X4 Pro</h1><small>eink-qemu 0.9.2 • experimental • original firmware</small></div><div class="keys"><button onclick="key('up')">&#9650; Up</button><button onclick="key('down')">&#9660; Down</button><button onclick="key('up',800)" title="hold 0.8s">&#9650; hold</button><button onclick="key('down',800)" title="hold 0.8s">&#9660; hold</button><button onclick="key('power')" title="power key">&#9211;</button><button onclick="refresh()">Refresh</button></div></header>
 <main><section><img id="screen" width="480" height="800" alt="X4 Pro native QEMU screen"><div id="info">Connecting to QMP…</div></section><section><div class="notice"><b>Isolated research environment.</b><div>Click the display to send a genuine GT911 touch. Short 60 ms taps avoid accidental long-press/uninstall actions under accelerated QEMU time. The production 8784, its firmware and saved SD are untouched. Native Wi-Fi MAC/NAT is available only inside this experimental QEMU.</div></div><h2>Firmware UART</h2><pre id="uart">Loading…</pre></section></main>
 <script>
 let busy=false,seq=0;const panel=document.querySelector('#screen');
 async function refresh(){if(busy)return;busy=true;try{let [state,log]=await Promise.all([fetch('/api/state'),fetch('/api/uart?tail=5000')]);let s=await state.json(),l=await log.json();if(!state.ok)throw Error(s.error);document.querySelector('#info').textContent=`QMP: ${s.qmp_status} · boot: ${s.home_log_observed?'Home reached':'waiting'} · ${s.frame_sha256?.slice(0,16)||'no frame'}`;document.querySelector('#uart').textContent=l.tail;panel.src='/screen.png?v='+(++seq)}catch(e){document.querySelector('#info').textContent='Error: '+e.message}finally{busy=false}}
 panel.addEventListener('click',async e=>{let r=panel.getBoundingClientRect(),x=Math.min(479,Math.max(0,Math.floor((e.clientX-r.left)*480/r.width))),y=Math.min(799,Math.max(0,Math.floor((e.clientY-r.top)*800/r.height)));try{let res=await fetch('/api/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,duration_ms:60})});if(!res.ok)throw Error(await res.text());setTimeout(refresh,600)}catch(err){document.querySelector('#info').textContent=err.message}});
+async function key(name,hold_ms=60){try{let res=await fetch('/api/key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:name,hold_ms})});if(!res.ok)throw Error(await res.text());setTimeout(refresh,700)}catch(err){document.querySelector('#info').textContent=err.message}}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){e.preventDefault();key('down')}else if(e.key==='ArrowUp'){e.preventDefault();key('up')}});
 refresh();setInterval(refresh,3000);
 </script></html>'''
 
@@ -170,7 +184,7 @@ def serve(backend, host='127.0.0.1', port=8810):
                 self.respond(503, json.dumps({'error': str(e)}).encode())
 
         def do_POST(self):
-            if self.path != '/api/tap':
+            if self.path not in ('/api/tap', '/api/key'):
                 self.respond(404, b'{"error":"not found"}')
                 return
             try:
@@ -178,6 +192,13 @@ def serve(backend, host='127.0.0.1', port=8810):
                 if not 0 < size <= 512:
                     raise ValueError('invalid request size')
                 data = json.loads(self.rfile.read(size))
+                if self.path == '/api/key':
+                    hold = data.get('hold_ms', 60)
+                    if type(hold) is not int or type(data.get('key')) is not str:
+                        raise ValueError('key must be a string, hold_ms an integer')
+                    backend.qmp.key(data['key'], hold)
+                    self.respond(200, b'{"accepted":true}')
+                    return
                 if type(data.get('x')) is not int or type(data.get('y')) is not int:
                     raise ValueError('coordinates must be integers')
                 duration = data.get('duration_ms', 60)
