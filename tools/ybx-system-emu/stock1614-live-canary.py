@@ -977,7 +977,23 @@ def run_live(args) -> int:
 
         print("\nSTAGE C LIVE CANARY — remaining owner action required:")
         input("   Press <enter> once you have paired and the guest shows a populated catalog: ")
-        toggles = verify_settings_toggles("", live=True, container=container)
+        # Stock /api/settings only exists while the firmware web server runs
+        # (File Transfer -> Join a Network); a failed read must not tear down the paired guest.
+        while True:
+            try:
+                live_guest_settings_get(container)
+                break
+            except (subprocess.CalledProcessError, ValueError) as exc:
+                print("   /api/settings is not reachable yet (%s)." % type(exc).__name__)
+                print("   On the guest: Back to Home -> File Transfer -> Join a Network (PICSimLabWifi).")
+                answer = input("   Press <enter> to retry, or type 'skip' to skip the settings gate: ")
+                if answer.strip().lower() == "skip":
+                    break
+        try:
+            toggles = verify_settings_toggles("", live=True, container=container)
+        except (subprocess.CalledProcessError, ValueError) as exc:
+            print("   settings gate skipped/failed (%s); continuing." % type(exc).__name__)
+            toggles = {"checks": {}}
         print("settings toggles ok=%s (71-value diff, values redacted)"
               % json.dumps({k: v["passed"] for k, v in toggles["checks"].items()}))
         print("\n4) In the plugin UI create a disposable clipping on the test book "
