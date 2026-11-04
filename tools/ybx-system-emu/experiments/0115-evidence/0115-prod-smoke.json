@@ -1,0 +1,139 @@
+{
+  "mode": "prod-smoke",
+  "base": "https://ybx.app",
+  "timestamp": "2026-11-04T21:36:26",
+  "all_pass": true,
+  "steps": [
+    [
+      "1 /health == 200",
+      true,
+      "status=200"
+    ],
+    [
+      "2 unauth POST clippings-key == 401 (was 404 pre-deploy)",
+      true,
+      "status=401"
+    ],
+    [
+      "/crosspoint-plugin/latest.json -> 1.6.13",
+      true,
+      "status=200 version=1.6.13 files_ok=None"
+    ],
+    [
+      "/crosspoint-plugin/catalog.json -> 1.6.13",
+      true,
+      "status=200 version=1.6.13 files_ok=True"
+    ],
+    [
+      "/crosspoint-plugin/manifest.json version 1.6.13",
+      true,
+      "status=200 version=1.6.13"
+    ],
+    [
+      "per-file manifest.json matches stable 1.6.13",
+      true,
+      "4beb34c26915"
+    ],
+    [
+      "per-file device.json matches stable 1.6.13",
+      true,
+      "809eb7f7b396"
+    ],
+    [
+      "per-file plugin.json matches stable 1.6.13",
+      true,
+      "2b5c41059cf5"
+    ],
+    [
+      "per-file plugin.js matches stable 1.6.13",
+      true,
+      "8c00375ce149"
+    ],
+    [
+      "per-file config.json matches stable 1.6.13",
+      true,
+      "c05a70d3b398"
+    ],
+    [
+      "per-file README.md matches stable 1.6.13",
+      true,
+      "c886001a4c5f"
+    ],
+    [
+      "per-file icon.png matches stable 1.6.13",
+      true,
+      "d20524eacbb8"
+    ],
+    [
+      "ybx-plugin.zip seven members match stable 1.6.13",
+      true,
+      "all_members_match=True"
+    ]
+  ],
+  "details": {
+    "health": 200,
+    "clippings_key_unauth_status": 401,
+    "/crosspoint-plugin/latest.json": {
+      "status": 200,
+      "version": "1.6.13"
+    },
+    "/crosspoint-plugin/catalog.json": {
+      "status": 200,
+      "version": "1.6.13"
+    },
+    "per_file": {
+      "manifest.json": {
+        "served_sha256": "4beb34c26915fd82e959fa040e4f7029688b73b5ea42f25d0b4948642637fa0a",
+        "stable_sha256": "4beb34c26915fd82e959fa040e4f7029688b73b5ea42f25d0b4948642637fa0a",
+        "match": true,
+        "status": 200
+      },
+      "device.json": {
+        "served_sha256": "809eb7f7b39638918617eb5e40853cd7e7fc86686b8abc4b1be8aa693731d126",
+        "stable_sha256": "809eb7f7b39638918617eb5e40853cd7e7fc86686b8abc4b1be8aa693731d126",
+        "match": true,
+        "status": 200
+      },
+      "plugin.json": {
+        "served_sha256": "2b5c41059cf5c0f5320016291bef3f20d9e7b58905ab4e18b6c8021a67e9d857",
+        "stable_sha256": "2b5c41059cf5c0f5320016291bef3f20d9e7b58905ab4e18b6c8021a67e9d857",
+        "match": true,
+        "status": 200
+      },
+      "plugin.js": {
+        "served_sha256": "8c00375ce149ba840582721d8b76cd86fc55830ab64070dc60a058b1fe264713",
+        "stable_sha256": "8c00375ce149ba840582721d8b76cd86fc55830ab64070dc60a058b1fe264713",
+        "match": true,
+        "status": 200
+      },
+      "config.json": {
+        "served_sha256": "c05a70d3b398521053cccd1f2f1034173230f259186e75b4f46bb1192dc936a8",
+        "stable_sha256": "c05a70d3b398521053cccd1f2f1034173230f259186e75b4f46bb1192dc936a8",
+        "match": true,
+        "status": 200
+      },
+      "README.md": {
+        "served_sha256": "c886001a4c5f3d48fc4b43dd0e095fe6eac6e75636d6b3cff9b286e3114f41ab",
+        "stable_sha256": "c886001a4c5f3d48fc4b43dd0e095fe6eac6e75636d6b3cff9b286e3114f41ab",
+        "match": true,
+        "status": 200
+      },
+      "icon.png": {
+        "served_sha256": "d20524eacbb86d275622f1dbf7ac7b3c2d46840cda8cbc6ef2ed3cc4510d1796",
+        "stable_sha256": "d20524eacbb86d275622f1dbf7ac7b3c2d46840cda8cbc6ef2ed3cc4510d1796",
+        "match": true,
+        "status": 200
+      }
+    },
+    "zip_members": {
+      "manifest.json": true,
+      "device.json": true,
+      "plugin.json": true,
+      "plugin.js": true,
+      "config.json": true,
+      "README.md": true,
+      "icon.png": true
+    }
+  },
+  "note": "Read-only unauthenticated HTTP; production is never modified. SHA-256 digests of public files are recorded, not secrets."
+}
