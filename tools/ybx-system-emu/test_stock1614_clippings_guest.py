@@ -92,6 +92,54 @@ class StockGuestVerdictTests(unittest.TestCase):
             self.assertEqual(verdict['status'], 'blocked_guest_wifi_input')
             self.assertEqual(verdict['stage'], 'PICSimLabWifi picker')
 
+    def test_native_x4pro_hardware_page_buttons_use_both_gpio_edges(self):
+        with tempfile.TemporaryDirectory() as work:
+            guest = StockClippingsGuest(
+                preview_port=8950, qmp_port=8951, evidence=Path(work)/'fixture.json',
+                out=Path(work)/'screens')
+            calls = []
+            guest.qmp.call = lambda cmd, args: calls.append((cmd, dict(args)))
+            guest.physical_page_key('down', press_s=.02)
+            self.assertEqual(calls, [
+                ('qom-set', {'path':'/machine/x4pro-keys', 'property':'down', 'value':True}),
+                ('qom-set', {'path':'/machine/x4pro-keys', 'property':'down', 'value':False}),
+            ])
+            for bad_key in ('power', 'home', 'left', '', 'UP'):
+                with self.assertRaises(ValueError):
+                    guest.physical_page_key(bad_key)
+            for bad_duration in (0, .001, .2):
+                with self.assertRaises(ValueError):
+                    guest.physical_page_key('up', press_s=bad_duration)
+            self.assertEqual(len(calls), 2)
+
+    def test_native_x4pro_release_is_guaranteed_after_wait_error(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as work:
+            guest = StockClippingsGuest(
+                preview_port=8950, qmp_port=8951, evidence=Path(work)/'fixture.json',
+                out=Path(work)/'screens')
+            calls = []
+            guest.qmp.call = lambda cmd, args: calls.append(args['value'])
+            with patch('run_stock1614_clippings_guest.time.sleep',
+                       side_effect=RuntimeError('interrupted')):
+                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                    guest.physical_page_key('up')
+            self.assertEqual(calls, [True, False])
+
+    def test_verified_page_turn_sequence_cannot_pass_on_same_frame(self):
+        with tempfile.TemporaryDirectory() as work:
+            guest = StockClippingsGuest(
+                preview_port=8950, qmp_port=8951, evidence=Path(work)/'fixture.json',
+                out=Path(work)/'screens')
+            frames = iter([b'PNG-same']*50)
+            guest.get = lambda url: next(frames)
+            guest.physical_page_key = lambda key: None
+            from unittest.mock import patch
+            with patch('run_stock1614_clippings_guest.time.sleep', return_value=None), \
+                 patch('run_stock1614_clippings_guest.time.monotonic', side_effect=[0, 10]):
+                with self.assertRaisesRegex(RuntimeError, 'ignored physical down'):
+                    guest.verify_physical_page_turns(('down',))
+
     def test_sync_failed_ui_does_not_count_as_success(self):
         with tempfile.TemporaryDirectory() as work:
             p = Path(work)

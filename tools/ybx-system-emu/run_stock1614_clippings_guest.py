@@ -139,6 +139,53 @@ class StockClippingsGuest:
             raise RuntimeError(f"QMP touch rejected at {name}: {answer}")
         time.sleep(self.delay)
 
+    def physical_page_key(self, key: str, *, press_s: float = 0.05) -> None:
+        """Use the native X4 Pro up/down GPIO buttons, not fragile GT911 taps.
+
+        The original CrossPoint firmware polls these same input lines. QEMU
+        `qom-set /machine/x4pro-keys` is part of eink-qemu 11.1.2. Always
+        release the key, including when QMP fails, to avoid a stuck button.
+        """
+        if key not in ("up", "down"):
+            raise ValueError("Only X4 Pro physical page buttons are supported")
+        if not (0.02 <= press_s <= 0.15):
+            raise ValueError("physical key duration must be 20..150 milliseconds")
+        self.qmp.call("qom-set", {"path": "/machine/x4pro-keys",
+                                  "property": key, "value": True})
+        try:
+            time.sleep(press_s)
+        finally:
+            self.qmp.call("qom-set", {"path": "/machine/x4pro-keys",
+                                      "property": key, "value": False})
+
+    def verify_physical_page_turns(self, sequence=("down", "down", "up")) -> list[dict]:
+        """Fail closed unless EVERY native page key renders a new E-Ink frame.
+
+        Requires caller to assert_isolated_qemu() and the reader to be open.
+        Do not commit captured screenshots of users' actual books.
+        """
+        results = []
+        for idx, key in enumerate(sequence, 1):
+            if key not in ("up", "down"):
+                raise ValueError("unsupported page key")
+            before = self.get("/screen.png")
+            self.physical_page_key(key)
+            deadline = time.monotonic() + 7
+            after = before
+            while time.monotonic() < deadline:
+                time.sleep(.4)
+                after = self.get("/screen.png")
+                if after != before:
+                    break
+            result = {"step": idx, "physical_key": key,
+                      "frame_changed": after != before,
+                      "before_sha256": hashlib.sha256(before).hexdigest(),
+                      "after_sha256": hashlib.sha256(after).hexdigest()}
+            results.append(result)
+            if after == before:
+                raise RuntimeError(f"Stock reader ignored physical {key} at step {idx}")
+        return results
+
     def capture(self, name: str) -> str:
         frame = self.get("/screen.png")
         if not frame.startswith(b"\x89PNG\r\n\x1a\n"):
