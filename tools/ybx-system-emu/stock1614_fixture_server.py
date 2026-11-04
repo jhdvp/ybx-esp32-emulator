@@ -49,12 +49,17 @@ def make_server(port:int, epub:Path, evidence:Path):
         # No raw auth headers, data or user secrets in the log.
         with lock:
             events.append({"method":method,"path":path,"status":status,"kind":kind})
-            evidence.write_text(json.dumps({
+            # Atomically publish each ledger snapshot. A CI test or a GUI
+            # reader must never observe a truncated JSON file mid-write.
+            snapshot = json.dumps({
                 "requests":events,"accounts":accounts,
                 "uploads":data["books"],
                 "last_progress":data["last_progress"],
                 "last_clippings":data["last_clippings"]
-            },ensure_ascii=False,indent=2))
+            },ensure_ascii=False,indent=2)
+            staged = evidence.with_name(evidence.name + ".tmp")
+            staged.write_text(snapshot, encoding="utf-8")
+            staged.replace(evidence)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version="HTTP/1.1"
@@ -68,8 +73,10 @@ def make_server(port:int, epub:Path, evidence:Path):
             self.send_header("Content-Length",str(len(body)))
             self.send_header("Cache-Control","no-store")
             self.end_headers()
-            self.wfile.write(body)
+            # Complete the evidence record before unblocking the client:
+            # otherwise a fast HTTP client can race the file-backed log.
             record(self.command,urlsplit(self.path).path,status,kind)
+            self.wfile.write(body)
 
         def reply(self,status,thing,kind=""):
             self.send(status,json.dumps(thing,ensure_ascii=False).encode("utf-8"),"application/json",kind)
