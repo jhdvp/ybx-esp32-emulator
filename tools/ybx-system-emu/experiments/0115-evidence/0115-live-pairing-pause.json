@@ -1,0 +1,37 @@
+{
+  "mode": "live-pairing-pause",
+  "timestamp": "2026-11-04T21:59:47",
+  "container": "ybx-eink-qemu11-8971",
+  "preview_port": 8971,
+  "qmp_port": 8972,
+  "candidate_zip_sha256": "43019ff44c2daae4f0878419c296e255ab253dce765e75d2053eb94794ca8b6e",
+  "disposable_sd_matches_candidate": true,
+  "shared_artifact_sd_written": false,
+  "steps": [
+    {
+      "gate": "guest_booted_home",
+      "pass": true,
+      "uart_boot_marker": true,
+      "frame_sha256": "f01bdbd02a99ead3320a2182da288cdfb1fa592805019252baca5f345dc7873e"
+    },
+    {
+      "gate": "plugins_screen_opened",
+      "pass": true,
+      "frame_sha256": "41a46082c995a86c644b0c4fcbe6b21ae2698d43df189114008b0f363495f4c1"
+    },
+    {
+      "gate": "ybx_launched_wifi_picker",
+      "pass": true,
+      "frame_sha256": "b072e81126f220cfe18ada1a8396d4f60b475b6efef207530d33915db37dd9cf"
+    },
+    {
+      "gate": "pairing_pause_qr_screen",
+      "pass": true,
+      "qr_frame_sha256_not_committed": "a31d133d2bdb0ba14cbc483de3e3882e8ffe2b5c8bd0dcbd25017153fbbde8d3"
+    }
+  ],
+  "qr_image_committed": false,
+  "pairing_performed": false,
+  "all_gates_pass": true,
+  "ok": true
+}

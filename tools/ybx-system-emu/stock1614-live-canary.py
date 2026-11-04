@@ -37,6 +37,7 @@ import io
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -55,6 +56,7 @@ sys.path.insert(0, str(HERE))
 # Reused, already-validated tooling.
 from stock1614_fixture_server import make_server, seed_from_ledger  # noqa: E402
 from run_stock1614_clippings_guest import guest_round_trip_valid, read_ledger  # noqa: E402
+from stock1614_ui import matches_guest_screen  # noqa: E402  (0113/0114 real-guest UI gate)
 import probe_x4pro_sd_content as sd_probe  # noqa: E402
 
 CANDIDATE_SHA = "43019ff44c2daae4f0878419c296e255ab253dce765e75d2053eb94794ca8b6e"
@@ -68,6 +70,13 @@ RESERVED_PORTS = {8784, 8940, 8941, 8950, 8951, 8964, 8965}
 # Firmware settings keys this canary toggles (Stage C step 3).
 TOGGLE_KEYS = ["koSync", "libraryUseMetadata", "koSendMetadata", "koSyncClippings"]
 SECRET_HINT = re.compile(r"token|key|password|secret|credential|auth|user", re.I)
+
+# Live pairing-pause navigation, measured on the genuine 2.0 RC X4 Pro guest on
+# this branch (Home row2 Plugins -> YBX entry -> PICSimLabWifi AP).  These drive
+# the real firmware UI through the preview bridge; they are not emulator patches.
+NAV_HOME_TO_PLUGINS = (240, 490)
+NAV_PLUGINS_TO_YBX = (240, 210)
+NAV_WIFI_JOIN = (138, 193)
 
 
 # --------------------------------------------------------------------------- #
@@ -777,34 +786,106 @@ def live_guest_settings_put(container: str, key: str, value) -> None:
 
 
 def live_start_container(sd_image: Path, preview: int, qmp: int, workdir: Path) -> subprocess.Popen:
+    # The start script requires ``workdir`` to NOT exist (it mkdir + populates it)
+    # and copies flash + SD into it, so the guest only ever writes the disposable
+    # copy under workdir — never the shared artifact image.
     env = {**os.environ,
            "YBX_QEMU11_PREVIEW_PORT": str(preview),
            "YBX_QEMU11_QMP_PORT": str(qmp),
            "YBX_QEMU11_WORKDIR": str(workdir),
            "YBX_QEMU11_SD": str(sd_image)}
-    return subprocess.Popen(["bash", str(START_SCRIPT)], env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    return subprocess.Popen(["bash", str(START_SCRIPT)], env=env, text=True)
 
 
-def live_wait_home(preview: int, timeout_s: float = 240) -> bool:
-    base = "http://127.0.0.1:%d" % preview
+def live_base(preview: int) -> str:
+    return "http://127.0.0.1:%d" % preview
+
+
+def live_state(preview: int) -> dict:
+    return json.loads(http_call(live_base(preview), "/api/state")[1])
+
+
+def live_screen(preview: int) -> bytes:
+    return http_call(live_base(preview), "/screen.png", timeout=20)[1]
+
+
+def live_anchor(preview: int, name: str) -> bool:
+    """Real-guest framebuffer gate (the 0113/0114 ``matches_guest_screen`` path)."""
+    try:
+        return matches_guest_screen(live_screen(preview), name)
+    except Exception:
+        return False
+
+
+def live_tap(preview: int, x: int, y: int, duration_ms: int = 80) -> bool:
+    status, raw = http_call(live_base(preview), "/api/tap", method="POST",
+                            body={"x": x, "y": y, "duration_ms": duration_ms}, timeout=15)
+    try:
+        return status == 200 and json.loads(raw).get("accepted") is True
+    except Exception:
+        return False
+
+
+def live_wait_anchor(preview: int, name: str, timeout_s: float, poll: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if live_anchor(preview, name):
+            return True
+        time.sleep(poll)
+    return live_anchor(preview, name)
+
+
+def live_drive(preview: int, xy, from_anchor: str, to_anchor: str,
+               attempts: int = 5, wait_s: float = 12.0) -> bool:
+    """Tap only while the *expected* prior screen is showing, then wait for the
+    target. Never blind-taps after the guest has already advanced (a stray tap
+    on the connecting/QR screen could hit something else)."""
+    for _ in range(attempts):
+        if live_anchor(preview, to_anchor):
+            return True
+        if not live_anchor(preview, from_anchor):
+            if live_wait_anchor(preview, to_anchor, wait_s):
+                return True
+            continue
+        live_tap(preview, xy[0], xy[1])
+        if live_wait_anchor(preview, to_anchor, wait_s):
+            return True
+    return live_anchor(preview, to_anchor)
+
+
+def live_wait_boot(preview: int, timeout_s: float):
+    """Prove the guest really booted to Home: UART boot marker AND the Home
+    framebuffer anchor. Returns (booted, uart_boot_marker_seen)."""
+    uart_marker = False
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
-            state = json.loads(http_call(base, "/api/state")[1])
-            if state.get("home_log_observed") and state.get("running", True):
-                return True
+            state = live_state(preview)
         except Exception:
-            pass
+            time.sleep(3)
+            continue
+        if state.get("home_log_observed"):
+            uart_marker = True
+            if live_anchor(preview, "home"):
+                return True, uart_marker
         time.sleep(3)
-    return False
+    return False, uart_marker
+
+
+def live_screenshot(evidence_dir: Path, name: str, preview: int) -> None:
+    """Commit only non-secret screens (Home / Plugins / Wi-Fi). The device-code
+    QR screen is never written here."""
+    try:
+        (evidence_dir / ("%s.png" % name)).write_bytes(live_screen(preview))
+    except Exception:
+        pass
 
 
 def run_live(args) -> int:
     preview, qmp = (args.preview_port, args.qmp_port) if args.preview_port else pick_free_pair()
     for p in (preview, qmp):
-        if p in RESERVED_PORTS:
-            print("REFUSE reserved port %d (owned by another run)" % p)
+        if p in RESERVED_PORTS or not port_is_free(p):
+            print("REFUSE port %d (reserved or already in use by another run)" % p)
             return 2
     zip_result = validate_candidate_zip(args.zip)
     print("candidate ZIP sha_match=%s version=%s ok=%s"
@@ -817,23 +898,85 @@ def run_live(args) -> int:
         print("Pass --sd-image <fat16 img> built from this exact candidate (see 0114).")
         return 2
 
-    workdir = Path(tempfile.mkdtemp(prefix="ybx-canary-live-"))
+    base = Path(tempfile.mkdtemp(prefix="ybx-canary-live-"))
+    work = base / ("preview-%d" % preview)          # start script requires this absent
+    disp_sd = base / "canary-disposable-sd.img"      # fresh copy; shared artifact untouched
+    shutil.copyfile(args.sd_image, disp_sd)
+    sd_result = validate_installed_sd(disp_sd, zip_result)
+    print("disposable SD install matches candidate ok=%s (shared artifact not booted)"
+          % sd_result["ok"])
     container = "ybx-eink-qemu11-%d" % preview
     proc = None
+    evidence = {"mode": "live-pairing-pause",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "container": container, "preview_port": preview, "qmp_port": qmp,
+                "candidate_zip_sha256": zip_result["sha256"],
+                "disposable_sd_matches_candidate": sd_result["ok"],
+                "shared_artifact_sd_written": False,
+                "steps": []}
+
+    def finish(rc: int) -> int:
+        evidence["ok"] = bool(evidence.get("all_gates_pass", False))
+        out = args.evidence_dir / "0115-live-pairing-pause.json"
+        out.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
+        print("redacted live evidence written to: %s" % out)
+        return rc
+
     try:
-        print("Starting isolated container %s preview=%d qmp=%d workdir=%s"
-              % (container, preview, qmp, workdir))
-        proc = live_start_container(args.sd_image, preview, qmp, workdir)
-        if not live_wait_home(preview):
+        print("Starting isolated container %s preview=%d qmp=%d work=%s"
+              % (container, preview, qmp, work))
+        proc = live_start_container(disp_sd, preview, qmp, work)
+        booted, uart_marker = live_wait_boot(preview, args.boot_timeout)
+        evidence["steps"].append({"gate": "guest_booted_home", "pass": booted,
+                                  "uart_boot_marker": uart_marker,
+                                  "frame_sha256": sha256_bytes(live_screen(preview)) if booted else None})
+        if booted:
+            live_screenshot(args.evidence_dir, "live-1-home", preview)
+        if not booted:
             print("Guest never reached Home; aborting live canary.")
-            return 1
-        print("\nSTAGE C LIVE CANARY — owner action required:")
-        print("1) In a browser open: http://127.0.0.1:%d/  (isolated QEMU preview)." % preview)
-        print("2) File Transfer -> Join a Network -> PICSimLabWifi.")
-        print("3) Plugins -> YBX, launch it, and READ THE QR ON THE GUEST SCREEN.")
-        print("   Pair it with the DEDICATED TEST Yandex account only.")
-        print("   Never copy the token/QR into this repo or logs.")
-        input("   Press <enter> once the guest shows a populated catalog: ")
+            evidence["all_gates_pass"] = False
+            return finish(1)
+
+        plugins = live_drive(preview, NAV_HOME_TO_PLUGINS, "home", "plugins", wait_s=12)
+        evidence["steps"].append({"gate": "plugins_screen_opened", "pass": plugins,
+                                  "frame_sha256": sha256_bytes(live_screen(preview))})
+        if plugins:
+            live_screenshot(args.evidence_dir, "live-2-plugins", preview)
+
+        ybx = (live_drive(preview, NAV_PLUGINS_TO_YBX, "plugins", "wifi", wait_s=12)
+               if plugins else False)
+        evidence["steps"].append({"gate": "ybx_launched_wifi_picker", "pass": ybx,
+                                  "frame_sha256": sha256_bytes(live_screen(preview))})
+        if ybx:
+            live_screenshot(args.evidence_dir, "live-3-wifi", preview)
+
+        pairing = (live_drive(preview, NAV_WIFI_JOIN, "wifi", "pairing_waiting",
+                              attempts=4, wait_s=args.pairing_timeout) if ybx else False)
+        # The QR screen is proven by its framebuffer anchor + a frame hash only;
+        # the image (and any device code / pairing link) is never committed.
+        evidence["steps"].append({"gate": "pairing_pause_qr_screen", "pass": pairing,
+                                  "qr_frame_sha256_not_committed": sha256_bytes(live_screen(preview))})
+        evidence["qr_image_committed"] = False
+        evidence["pairing_performed"] = False
+        evidence["all_gates_pass"] = bool(booted and plugins and ybx and pairing
+                                          and sd_result["ok"])
+        if not pairing:
+            print("Reached Wi-Fi join but never saw the device-code pairing screen; "
+                  "not claiming the pairing pause.")
+            return finish(1)
+
+        print("\nPAIRING PAUSE REACHED (owner action; nothing was paired here):")
+        print("  The isolated guest is showing its device-code QR / 'Waiting for authorization'.")
+        print("  Preview: http://127.0.0.1:%d/  (container %s)." % (preview, container))
+        print("  Pair ONLY with the dedicated test Yandex account; never copy the")
+        print("  QR/token/link into this repo or any log. No QR image is committed.")
+        if args.stop_at_pairing:
+            print("\n--stop-at-pairing: exiting before any pairing. Tearing down only "
+                  "this run's container.")
+            return finish(0)
+
+        print("\nSTAGE C LIVE CANARY — remaining owner action required:")
+        input("   Press <enter> once you have paired and the guest shows a populated catalog: ")
         toggles = verify_settings_toggles("", live=True, container=container)
         print("settings toggles ok=%s (71-value diff, values redacted)"
               % json.dumps({k: v["passed"] for k, v in toggles["checks"].items()}))
@@ -845,21 +988,15 @@ def run_live(args) -> int:
         print("5) Disable Clippings in the plugin UI (old proof must be revoked, "
               "KOSync progress must keep working), then re-enable (a new, "
               "different proof must be minted).")
-        token_status = subprocess.run(
-            ["docker", "exec", container, "sh", "-c",
-             "test -f /out/sd.img && echo sd-present"], text=True,
-            capture_output=True).stdout.strip()
-        print("token.json: check presence/keys on the guest SD only "
-              "(never print the token). sd media status: %s" % (token_status or "n/a"))
         print("\nLive canary complete. Owner to record pass/fail against the runbook "
               "Stage C gates. Nothing here was promoted to Stable.")
-        return 0
+        return finish(0)
     finally:
         print("\nTearing down live container %s (only this run's container)." % container)
         subprocess.run(["docker", "rm", "-f", container], capture_output=True, text=True)
         if proc and proc.poll() is None:
             proc.terminate()
-        bridge_pid = workdir / "bridge.pid"
+        bridge_pid = work / "bridge.pid"
         if bridge_pid.is_file():
             try:
                 os.kill(int(bridge_pid.read_text().strip()), 15)
@@ -869,6 +1006,7 @@ def run_live(args) -> int:
         subprocess.run(["bash", "-c",
                         "pkill -f 'eink_qemu11_preview_bridge.py --port %d' || true" % preview],
                        capture_output=True, text=True)
+        shutil.rmtree(base, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -1044,6 +1182,14 @@ def main() -> int:
                         default=HERE / "experiments" / "0115-evidence")
     parser.add_argument("--preview-port", type=int, default=0)
     parser.add_argument("--qmp-port", type=int, default=0)
+    parser.add_argument("--stop-at-pairing", action="store_true",
+                        help="With --live: prove boot + navigation to the device-code "
+                             "pairing pause, then exit 0 without pairing (non-interactive).")
+    parser.add_argument("--boot-timeout", type=float, default=300.0,
+                        help="With --live: seconds to wait for the guest to reach Home.")
+    parser.add_argument("--pairing-timeout", type=float, default=90.0,
+                        help="With --live: seconds to wait for the QR/pairing screen "
+                             "after joining the network.")
     args = parser.parse_args()
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
     if args.dry_run_synthetic:

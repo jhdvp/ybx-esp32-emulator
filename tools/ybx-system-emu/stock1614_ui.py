@@ -27,6 +27,13 @@ ANCHORS = {
     "clip_action": (234, 148),
     "wifi_connecting": (158, 349),
     "sync_failed": (182, 356),
+    # Live pairing-pause gates, captured from the genuine 2.0 RC X4 Pro guest on
+    # this branch. Both are static firmware *text* crops: the Plugins header word
+    # and the "Waiting for authorization…" line. Neither contains a QR, device
+    # code or pairing link, so they are safe to commit while still failing closed
+    # on any other screen.
+    "plugins": (58, 54),
+    "pairing_waiting": (78, 371),
 }
 
 # Stock's More rows move by exactly one 72px slot when View Clippings is

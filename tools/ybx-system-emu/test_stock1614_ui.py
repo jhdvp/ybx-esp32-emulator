@@ -55,6 +55,23 @@ class RealGuestUIAnchorsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             matches_guest_screen(self.frame('reader'), 'unrecognized')
 
+    def test_live_pairing_anchors_are_specific_and_qr_free(self):
+        # The Plugins screen is a real, secret-free guest capture. The pairing
+        # fixture is the "Waiting for authorization…" text region composited on a
+        # blank panel: the raw device-code QR screen is never stored. Each live
+        # anchor must match only its own screen and never a blank panel or another.
+        blank = (SAMPLES / 'blank.png').read_bytes()
+        self.assertTrue(matches_guest_screen(self.frame('plugins'), 'plugins'))
+        self.assertTrue(matches_guest_screen(self.frame('pairing_waiting'),
+                                             'pairing_waiting'))
+        self.assertFalse(matches_guest_screen(blank, 'plugins'))
+        self.assertFalse(matches_guest_screen(blank, 'pairing_waiting'))
+        for other in ('home', 'wifi', 'reader', 'more', 'sync'):
+            self.assertFalse(matches_guest_screen(self.frame('pairing_waiting'), other))
+            self.assertFalse(matches_guest_screen(self.frame('plugins'), other))
+        self.assertFalse(matches_guest_screen(self.frame('home'), 'pairing_waiting'))
+        self.assertFalse(matches_guest_screen(self.frame('wifi'), 'pairing_waiting'))
+
 
 if __name__ == '__main__':
     unittest.main()

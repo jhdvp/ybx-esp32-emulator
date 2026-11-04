@@ -76,6 +76,49 @@ Toggle/re-enable gates (`--live`) run against the genuine guest firmware `/api/s
 
 The evidence JSON stores booleans, public SHA-256 digests, key **names**, and value lengths only. `token_never_logged=true`; the leak scan rejects the fixture bearer token, the disposable marker, and the pairing host, and re-scans the exact bytes written before reporting success.
 
+## Live path to pairing pause (real isolated guest, GREEN)
+
+The `--live` path had never been executed. It is now driven **non-interactively** up to the first owner pause — the device-code QR pairing screen — and no further. This proves the script really boots the original CrossPoint 2.0 RC X4 Pro guest and reaches the pairing pause; it does **not** pair, does **not** open the pairing link, and never prints or stores the QR / device code / link.
+
+Exact command (run from `tools/ybx-system-emu/`, stdin closed):
+
+```
+python3 stock1614-live-canary.py --live --stop-at-pairing </dev/null
+```
+
+It exits `0` the instant the pairing pause is confirmed, then tears down **only its own** container.
+
+### What was proven (all gates PASS, exit 0)
+
+| Gate | How proven (existing 0113/0114 gates) | Result |
+|------|----------------------------------------|--------|
+| Own container on a free port | `pick_free_pair()` chose preview `8971` / QMP `8972`; reserved `8950/8951/8964/8965` and any busy port are **refused** (verified: `--preview-port 8950` → exit 2) | PASS |
+| Fresh disposable SD, shared artifact untouched | the shared `stock-1614-plugin-exact-sd.img` is copied to a temp `canary-disposable-sd.img`, byte-validated against the candidate ZIP (7/7 files), and the guest only ever writes the copy under its temp workdir | PASS |
+| Guest booted to Home | UART boot marker (`home_log_observed`, `[MEM] Free:`) **and** the `home` framebuffer anchor from `matches_guest_screen` | PASS |
+| Plugins screen opened | tap Home row2 `(240,490)`; new `plugins` text anchor matches (and only that screen) | PASS |
+| YBX launched → firmware Wi-Fi picker | tap `(240,210)`; the genuine `wifi` anchor (PICSimLabWifi picker) appears — the same signal 0114 recorded | PASS |
+| Wi-Fi joined → device-code QR pause | tap `(138,193)`; `wifi` anchor clears and the new `pairing_waiting` anchor ("Waiting for authorization…") matches | PASS |
+
+Evidence (redacted): `experiments/0115-evidence/0115-live-pairing-pause.json` (booleans + per-stage frame SHA-256 only), plus the secret-free screenshots `live-1-home.png`, `live-2-plugins.png`, `live-3-wifi.png`. The QR/pairing screen itself is **never** written to the repo — it is proven by the `pairing_waiting` anchor plus `qr_frame_sha256_not_committed` (a hash, not the image).
+
+### Tooling added on this branch (no emulator/firmware changes)
+
+- Two **secret-free** real-guest UI anchors in `stock1614_ui.py`: `plugins` (the "Plugins" header word) and `pairing_waiting` (the "Waiting for authorization…" line). Both are static firmware *text* crops captured from the genuine guest; neither contains a QR, device code or pairing link. `test_stock1614_ui.py` proves each matches only its own screen, fails on a blank panel, and never cross-matches. The `pairing_waiting` fixture is the text region composited on a blank panel precisely so the raw QR screen is never stored.
+- `run_live` gained `--stop-at-pairing`, `--boot-timeout`, `--pairing-timeout`, a real boot gate (UART **and** framebuffer), the Plugins→YBX→Wi-Fi→QR navigation via the preview bridge `/api/tap` + `/screen.png`, a fresh disposable SD copy, a reserved/busy-port refusal, and teardown that also removes the temp workdir on success **and** failure.
+
+### Honest limits — what this does NOT prove
+
+- **Reaching the QR uses a real device-code request.** As in 0114, launching YBX and joining the network makes the *firmware itself* contact its configured auth host to render a genuine device-code QR. The canary only observes the resulting screen; it does not approve, pair, or open the link. No token/QR/link is captured.
+- **Not a completed sign-in.** Catalog load, `token.json` storage, the live account catalog, the bidirectional Yandex quote round-trip, and cold-boot idempotence on the **real** account remain owner-gated (the interactive `--live` path continues past the pause for those). They were not exercised here.
+- **TLS `setInsecure()`** on the original firmware is unchanged and out of scope.
+- **Navigation reliability** uses GT911 taps through the bridge; on a fresh **cold** container it was deterministic. 0113's intermittent touch freeze is a warm-reboot property and does not apply to this cold-start path.
+
+### Remaining owner steps at the pause
+
+1. Open the preview `http://127.0.0.1:<port>/` (or rerun `--live` without `--stop-at-pairing` to continue past the pause).
+2. Scan the on-screen QR with the **dedicated test Yandex account only** and approve; never copy the QR/token/link into this repo or any log.
+3. Confirm the populated catalog, then run the Stage C gates the interactive path prompts for: independent `/api/settings` toggles (71-value redacted diff), the disposable clipping + Yandex round-trip, a cold restart of **only this container** for the duplicate check, and Clippings disable→re-enable proof revocation/re-mint.
+
 ## Known limits (honest, unfixable client-side)
 
 - **`setInsecure()` TLS:** the original Stock firmware disables peer-certificate verification on Clippings/progress. Neither the plugin nor the server can force the firmware to verify certs; this is a firmware property, kept separate from Stock compatibility. The smoke harness therefore uses curl's system trust rather than papering over it in Python.

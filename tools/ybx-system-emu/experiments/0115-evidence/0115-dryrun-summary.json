@@ -1,6 +1,6 @@
 {
   "mode": "dry-run-synthetic",
-  "timestamp": "2026-11-04T21:36:35",
+  "timestamp": "2026-11-04T21:59:17",
   "all_pass": true,
   "steps": [
     [
@@ -79,8 +79,8 @@
       "ok": true,
       "detail": "Pinned official QEMU 11.1.2 / 0.9.2 SHA and input checks PASS",
       "ports": [
-        8971,
-        8972
+        8973,
+        8974
       ]
     },
     "installed_sd": {
