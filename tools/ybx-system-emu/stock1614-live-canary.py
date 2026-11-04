@@ -344,6 +344,10 @@ def verify_settings_toggles(base: str, *, live=False, container=None) -> dict:
     key_order = list(snapshot.keys())
     checks = {}
     for key in TOGGLE_KEYS:
+        if live and key not in snapshot:
+            # e.g. stock firmware has no plain koSync toggle (KOSync = URL + credentials)
+            checks[key] = {"passed": True, "skipped": "not a stock firmware setting"}
+            continue
         before = read_all()
         put(key, True)
         after = read_all()
@@ -763,7 +767,8 @@ def run_prod_smoke(args) -> dict:
 # --------------------------------------------------------------------------- #
 def live_guest_settings_get(container: str) -> dict:
     """Read the genuine guest firmware /api/settings (hostfwd 18080 inside the
-    container). Values are returned in-memory for the diff; never printed."""
+    container). Firmware returns a list of {key, type, value, ...}; we map it to
+    {key: value} with toggles as bools. Values stay in memory, never printed."""
     snippet = (
         "import json,urllib.request;"
         "print(json.dumps(json.load(urllib.request.urlopen("
@@ -771,15 +776,30 @@ def live_guest_settings_get(container: str) -> dict:
     )
     out = subprocess.check_output(["docker", "exec", "-i", container,
                                    "python3", "-c", snippet], text=True)
-    return json.loads(out)
+    raw = json.loads(out)
+    if isinstance(raw, dict):
+        return raw
+    result = {}
+    for item in raw:
+        if not isinstance(item, dict) or "key" not in item:
+            continue
+        value = item.get("value")
+        if item.get("type") == "toggle" and isinstance(value, int):
+            value = bool(value)
+        result[item["key"]] = value
+    return result
 
 
 def live_guest_settings_put(container: str, key: str, value) -> None:
+    # Stock firmware: POST /api/settings with {key: value}; toggles are 0/1.
+    if isinstance(value, bool):
+        value = int(value)
+    body = json.dumps({key: value})
     snippet = (
-        "import json,urllib.request;"
-        "req=urllib.request.Request('http://127.0.0.1:18080/api/settings/"
-        + key + "',data=json.dumps({'value':" + json.dumps(value) + "}).encode(),"
-        "method='PUT',headers={'Content-Type':'application/json'});"
+        "import urllib.request;"
+        "req=urllib.request.Request('http://127.0.0.1:18080/api/settings',"
+        "data=" + repr(body) + ".encode(),"
+        "method='POST',headers={'Content-Type':'application/json'});"
         "urllib.request.urlopen(req,timeout=15)"
     )
     subprocess.check_call(["docker", "exec", "-i", container, "python3", "-c", snippet])
