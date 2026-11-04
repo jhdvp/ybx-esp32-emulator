@@ -33,6 +33,9 @@ ANCHORS = {
     # code or pairing link, so they are safe to commit while still failing closed
     # on any other screen.
     "plugins": (58, 54),
+    "settings": (57, 50),
+    "connectivity": (56, 50),
+    "plugins_popup": (195, 292),
     "pairing_waiting": (78, 371),
 }
 

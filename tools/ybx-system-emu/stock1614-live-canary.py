@@ -997,7 +997,20 @@ def run_live(args) -> int:
             evidence["all_gates_pass"] = False
             return finish(1)
 
-        plugins = live_drive(preview, NAV_HOME_TO_PLUGINS, "home", "plugins", wait_s=12)
+        # A fresh card has no persisted plugin preference. Enable plugins using
+        # the firmware UI; never seed settings or credentials on the card.
+        enabled = (live_drive(preview, (150, 565), "home", "settings", wait_s=12)
+                   and live_drive(preview, (150, 522), "settings", "connectivity", wait_s=12)
+                   and live_drive(preview, (130, 388), "connectivity", "plugins_popup", wait_s=12))
+        if enabled:
+            live_tap(preview, 230, 362)
+            time.sleep(2)  # let the firmware dismiss the popup
+            enabled = not live_anchor(preview, "plugins_popup") and live_anchor(preview, "connectivity")
+        enabled = (enabled
+                   and live_drive(preview, (30, 62), "connectivity", "settings", wait_s=12)
+                   and live_drive(preview, (30, 62), "settings", "home", wait_s=12))
+        evidence["steps"].append({"gate": "enable_plugins_on_clean_card", "pass": enabled})
+        plugins = enabled and live_drive(preview, NAV_HOME_TO_PLUGINS, "home", "plugins", wait_s=12)
         evidence["steps"].append({"gate": "plugins_screen_opened", "pass": plugins,
                                   "frame_sha256": sha256_bytes(live_screen(preview))})
         if plugins:

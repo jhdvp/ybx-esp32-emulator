@@ -138,3 +138,15 @@ python3 tools/ybx-system-emu/stock1614-live-canary.py --live
 ```
 
 Not verified: clean-card guest boot and pairing pause, Home/File Transfer/YBX navigation, unpaired safe failure in the plugin web panel, paired activation, settings verification, opening the book and clipping synchronization. In the current sandbox, binding a loopback socket fails with `PermissionError`, so even the synthetic dry run cannot start its local server; no guest or owner flow was run here. No pairing was performed.
+
+## Owner-friendly live run v2
+
+Work in progress: do not run the owner canary yet. The fresh SD exposes a first-boot condition missed by the old media: Plugins are disabled by default. The driver now enables them through Settings → Connectivity → Plugins and returns using the header back arrow; no settings or credentials are preseeded on the SD. The firmware source maps the header back target to Back (`MappedInputManager::wasBackGesture`). A clean-SD `--live --stop-at-pairing` reached the pairing screen without pairing, and `--dry-run-synthetic` passed. The full live mode remains deliberately blocked.
+
+Reproduction from the repository root:
+
+```sh
+python3 tools/ybx-system-emu/stock1614-live-canary.py --live --stop-at-pairing
+```
+
+Still unverified and not implemented: automated navigation from YBX to File Transfer and back, the unpaired web-panel failure and paired button activation, verification of the resulting settings, automatic proxy and owner prompts, UART clipping-error reporting, and the private decoded pairing-URL file. Playwright and Chrome are present locally; Python QR decoding and `zbarimg` were not found. No pairing or production writes were performed.
