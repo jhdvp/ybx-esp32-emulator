@@ -343,7 +343,7 @@ def build_fat16(files: list[tuple[str, bytes]], total_sectors: int = 131072,
     taken: dict[str, set[bytes]] = {}
     shorts: dict[str, bytes] = {}
     for path, _ in entries:
-        parent = path[:path.rfind("/") + 1] if "/" in path.rstrip("/") else ""
+        parent = path.rstrip("/").rsplit("/", 1)[0] + "/" if "/" in path.rstrip("/") else ""
         name = path.rstrip("/").rsplit("/", 1)[-1]
         bucket = taken.setdefault(parent, set())
         shorts[path] = _short_name(name, bucket)
@@ -378,7 +378,7 @@ def build_fat16(files: list[tuple[str, bytes]], total_sectors: int = 131072,
         dir_records[path] = body
     for path, payload in entries:
         name = path.rstrip("/").rsplit("/", 1)[-1]
-        parent = path[:path.rfind("/") + 1] if "/" in path.rstrip("/") else ""
+        parent = path.rstrip("/").rsplit("/", 1)[0] + "/" if "/" in path.rstrip("/") else ""
         if path.endswith("/"):
             record = _entry(name, shorts[path], 0x10, dir_cluster[path], 0,
                             time_f, date_f)

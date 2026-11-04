@@ -58,6 +58,7 @@ from stock1614_fixture_server import make_server, seed_from_ledger  # noqa: E402
 from run_stock1614_clippings_guest import guest_round_trip_valid, read_ledger  # noqa: E402
 from stock1614_ui import matches_guest_screen  # noqa: E402  (0113/0114 real-guest UI gate)
 import probe_x4pro_sd_content as sd_probe  # noqa: E402
+import x4pro_test_card as card  # noqa: E402
 
 CANDIDATE_SHA = "43019ff44c2daae4f0878419c296e255ab253dce765e75d2053eb94794ca8b6e"
 DEFAULT_ZIP = Path.home() / "Projects/YBX/artifacts/ybx-stock1614-release-candidate-20261104/ybx-plugin-1.6.14-rc.zip"
@@ -194,6 +195,42 @@ def validate_installed_sd(sd_image: Path, zip_result: dict) -> dict:
             "plugin_files_found": len(present), "per_file": per_file,
             "koreader_json_present": has_koreader, "fixture_epub_present": has_epub,
             "ok": all_match and has_koreader and has_epub}
+
+
+def build_clean_live_sd(dest: Path, zip_path: Path, zip_result: dict) -> dict:
+    """Build fresh media; never copy a card containing old account settings."""
+    book = io.BytesIO()
+    with zipfile.ZipFile(book, "w") as epub:
+        epub.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        epub.writestr("META-INF/container.xml", card.CONTAINER_XML)
+        epub.writestr("OEBPS/content.opf", card.OPF_XML.replace(card.PROPHET_TITLE, "Hamlet").replace(card.PROPHET_AUTHOR, "William Shakespeare"))
+        epub.writestr("OEBPS/toc.ncx", card.NCX_XML.replace(card.PROPHET_TITLE, "Hamlet").replace("Of the Probe", "Act III"))
+        # William Shakespeare, Hamlet, act III scene 1 (public domain).
+        epub.writestr("OEBPS/chapter1.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Hamlet</title></head><body><p>To be, or not to be, that is the question: Whether tis nobler in the mind to suffer the slings and arrows of outrageous fortune.</p></body></html>')
+    files = [(".crosspoint/", b""), (".crosspoint/plugins/", b""),
+             (".crosspoint/plugins/ybx/", b""), ("books/", b"")]
+    with zipfile.ZipFile(zip_path) as archive:
+        files.extend((".crosspoint/plugins/ybx/" + name, archive.read("ybx/" + name))
+                     for name in MANIFEST_FILES)
+    files.append(("books/Hamlet.epub", book.getvalue()))
+    image = card.wrap_mbr(card.build_fat16(files))
+    # Scan raw media as well as the file list; no stale deleted clusters can survive.
+    forbidden = (b"10.0.2.2", b"18085", b"example.invalid")
+    if any(value in image for value in forbidden):
+        raise ValueError("clean SD contains a forbidden fixture address")
+    dest.write_bytes(image)
+    result = validate_installed_sd(dest, zip_result)
+    summary, _ = sd_probe.inspect_image(dest)
+    paths = {n["path"] for n in summary["tree"] if n.get("type") == "file"}
+    expected = {"/.crosspoint/plugins/ybx/" + name for name in MANIFEST_FILES}
+    expected.add("/books/Hamlet.epub")
+    result["ok"] = result["plugin_files_found"] == 7 and all(
+        row["matches_candidate"] for row in result["per_file"].values()) and paths == expected
+    result["clean_file_set"] = paths == expected
+    result["fixture_address_absent"] = True
+    if not result["ok"]:
+        raise ValueError("clean SD verification failed")
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -906,6 +943,9 @@ def live_screenshot(evidence_dir: Path, name: str, preview: int) -> None:
 
 
 def run_live(args) -> int:
+    if not args.stop_at_pairing:
+        print("Live owner flow is not ready: automatic navigation and web-panel activation are not verified. Refusing to run.")
+        return 2
     preview, qmp = (args.preview_port, args.qmp_port) if args.preview_port else pick_free_pair()
     for p in (preview, qmp):
         if p in RESERVED_PORTS or not port_is_free(p):
@@ -917,16 +957,11 @@ def run_live(args) -> int:
     if not zip_result["ok"]:
         print("Candidate payload validator FAILED; refusing to start a live canary.")
         return 2
-    if not args.sd_image.is_file():
-        print("Live mode needs a disposable SD carrying the seven installed files.")
-        print("Pass --sd-image <fat16 img> built from this exact candidate (see 0114).")
-        return 2
 
     base = Path(tempfile.mkdtemp(prefix="ybx-canary-live-"))
     work = base / ("preview-%d" % preview)          # start script requires this absent
     disp_sd = base / "canary-disposable-sd.img"      # fresh copy; shared artifact untouched
-    shutil.copyfile(args.sd_image, disp_sd)
-    sd_result = validate_installed_sd(disp_sd, zip_result)
+    sd_result = build_clean_live_sd(disp_sd, args.zip, zip_result)
     print("disposable SD install matches candidate ok=%s (shared artifact not booted)"
           % sd_result["ok"])
     container = "ybx-eink-qemu11-%d" % preview

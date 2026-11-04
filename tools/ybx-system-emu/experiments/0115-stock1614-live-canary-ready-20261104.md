@@ -126,3 +126,15 @@ Evidence (redacted): `experiments/0115-evidence/0115-live-pairing-pause.json` (b
 - **Not a real sign-in:** the dry-run pairing/token step exercises the device-code protocol against the fixture; real QR approval, the account's live catalog, and bidirectional Yandex quote delivery remain **owner-verified on real hardware only**.
 - **Plugin-repo QA doc is stale on the endpoint status:** the `jhdvp/ybx-crosspoint-plugin` QA note still says unauthenticated `POST …/auth/clippings-key` returns **404**; it is **401** now that PR #46 is deployed (confirmed in Part 1). That repo was **not** edited here — this note is the correction of record for this branch.
 - **No promotion:** PR #17 (1.6.14 RC) and the two-phase `YBX_STOCK_PLUGIN_CHANNEL` stay on `stable`; production still serves 1.6.13. Promotion is a separate, audited owner action, not a consequence of this run.
+
+## Owner-friendly live run v2
+
+Work in progress; **do not use the full owner run yet**. The driver now builds a fresh card containing only the seven candidate plugin files and a public-domain Hamlet excerpt, verifies the file set and scans the complete image for fixture addresses. It refuses the full live run until automated navigation and web-panel activation are implemented and verified. The previous owner instructions above describe v1, not a completed v2.
+
+The intended owner command, once the remaining work is complete, is:
+
+```sh
+python3 tools/ybx-system-emu/stock1614-live-canary.py --live
+```
+
+Not verified: clean-card guest boot and pairing pause, Home/File Transfer/YBX navigation, unpaired safe failure in the plugin web panel, paired activation, settings verification, opening the book and clipping synchronization. In the current sandbox, binding a loopback socket fails with `PermissionError`, so even the synthetic dry run cannot start its local server; no guest or owner flow was run here. No pairing was performed.
