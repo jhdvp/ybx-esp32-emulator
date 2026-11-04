@@ -92,6 +92,40 @@ class StockGuestVerdictTests(unittest.TestCase):
             self.assertEqual(verdict['status'], 'blocked_guest_wifi_input')
             self.assertEqual(verdict['stage'], 'PICSimLabWifi picker')
 
+    def test_sync_failed_ui_does_not_count_as_success(self):
+        with tempfile.TemporaryDirectory() as work:
+            p = Path(work)
+            guest = StockClippingsGuest(
+                preview_port=8940, qmp_port=8941, evidence=p/'ledger.json',
+                out=p/'screens', tap_delay=0.7)
+            guest.out.mkdir()
+            guest.screen_is = lambda name: name == 'sync_failed'
+            guest.capture = lambda name: 'fake-screen-hash'
+            guest.get = lambda path: b'{"ready":true,"radio_connected":null}'
+            with self.assertRaisesRegex(RuntimeError, 'Original Stock Sync failed'):
+                guest._wait_for_network_exchange(timeout_s=1.0)
+            import json
+            report = json.loads((guest.out/'blocked-result.json').read_text())
+            self.assertEqual(report['status'], 'guest_sync_failed')
+            self.assertEqual(report['fixture_events'], 0)
+
+    def test_wifi_connecting_without_guest_http_is_not_e2e(self):
+        with tempfile.TemporaryDirectory() as work:
+            p = Path(work)
+            guest = StockClippingsGuest(
+                preview_port=8940, qmp_port=8941, evidence=p/'ledger.json',
+                out=p/'screens', tap_delay=0.7)
+            guest.out.mkdir()
+            guest.screen_is = lambda name: name == 'wifi_connecting'
+            guest.capture = lambda name: 'fake-screen-hash'
+            guest.get = lambda path: b'{"ready":true,"radio_connected":null}'
+            with self.assertRaisesRegex(RuntimeError, 'no KOSync or Clippings HTTP traffic'):
+                guest._wait_for_network_exchange(timeout_s=0.001)
+            import json
+            report = json.loads((guest.out/'blocked-result.json').read_text())
+            self.assertEqual(report['status'], 'blocked_guest_no_sync_traffic')
+            self.assertEqual(report['stage'], 'Stock Wi-Fi connecting')
+
     def test_refuses_production_and_non_qemu_ports(self):
         with tempfile.TemporaryDirectory() as work:
             p=Path(work)

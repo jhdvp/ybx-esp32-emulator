@@ -222,7 +222,7 @@ class StockClippingsGuest:
         if self.screen_is("reader"):
             return
         if has_recent_book:
-            if not self.screen_is("home"):
+            if not (self.screen_is("home_recent") or self.screen_is("home")):
                 raise RuntimeError("Rebooted guest is neither Home nor synthetic reader")
             self.tap_to_screen(BOOK_COORDS, "resume recent book", "reader", count=3)
         else:
@@ -277,6 +277,46 @@ class StockClippingsGuest:
         self.wait_screen("created", timeout_s=12)
         self.capture("05-clipping-verified-in-menu")
 
+    def _guest_sync_request_seen(self) -> bool:
+        """Count only actual firmware-originated requests, not fixture probes."""
+        return any(
+            e.get("kind") in ("clippings", "clippings-put", "progress-put")
+            and e.get("status") not in (None, 0)
+            for e in read_ledger(self.evidence).get("requests", [])
+        )
+
+    def _record_sync_block(self, status: str, stage: str) -> None:
+        report = {
+            "status": status,
+            "stage": stage,
+            "fixture_only": True,
+            "qemu_state": json.loads(self.get("/api/state")),
+            "fixture_events": len(read_ledger(self.evidence).get("requests", [])),
+        }
+        self.capture("failed-" + status)
+        (self.out / "blocked-result.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+
+    def _wait_for_network_exchange(self, timeout_s: float = 40) -> None:
+        """Leaving Wi-Fi picker for Connecting is not a successful sync.
+
+        Original Stock can show 'Connecting…' and then 'Could Not Sync
+        Clippings' without any HTTP request reaching the configured server.
+        Neither state is a green E2E result, even if the QMP tap was accepted.
+        """
+        until = time.monotonic() + timeout_s
+        while time.monotonic() < until:
+            if self._guest_sync_request_seen():
+                return
+            if self.screen_is("sync_failed"):
+                self._record_sync_block("guest_sync_failed", "Stock Sync failed: Could Not Sync Clippings")
+                raise RuntimeError("Original Stock Sync failed; check KOSync server settings and network")
+            time.sleep(0.65)
+        stage = ("Stock Wi-Fi connecting" if self.screen_is("wifi_connecting")
+                 else "No guest-originated KOSync or Clippings traffic")
+        self._record_sync_block("blocked_guest_no_sync_traffic", stage)
+        raise RuntimeError("Real guest produced no KOSync or Clippings HTTP traffic")
+
     def sync_clippings(self, *, retry: bool = False) -> None:
         self.open_more()
         for attempt in range(5):
@@ -292,9 +332,10 @@ class StockClippingsGuest:
         while time.monotonic() < until:
             if self.screen_is("wifi"):
                 break
-            if any(e.get("kind") == "clippings" for e in
-                   read_ledger(self.evidence).get("requests", [])):
+            if self._guest_sync_request_seen():
                 return
+            if self.screen_is("sync_failed"):
+                self._wait_for_network_exchange(timeout_s=0.1)
             time.sleep(0.9)
         else:
             raise RuntimeError("Guest showed neither Wi-Fi picker nor KoSync traffic")
@@ -303,19 +344,11 @@ class StockClippingsGuest:
             self.tap(WIFI_FIXTURE_COORDS, f"Connect PICSimLabWifi {attempt + 1}")
             if not self.screen_is("wifi"):
                 self.capture("12-sync-start" if retry else "08-sync-start")
+                self._wait_for_network_exchange()
                 return
         # A positive /api/tap acknowledgement is only QMP injection. It does
         # not prove the real ESP32 guest processed a GT911 touch event.
-        blocked = {
-            "status": "blocked_guest_wifi_input",
-            "stage": "PICSimLabWifi picker",
-            "fixture_only": True,
-            "qemu_state": json.loads(self.get("/api/state")),
-            "fixture_events": len(read_ledger(self.evidence).get("requests", [])),
-        }
-        self.capture("failed-wifi-picker")
-        (self.out / "blocked-result.json").write_text(
-            json.dumps(blocked, ensure_ascii=False, indent=2) + "\n")
+        self._record_sync_block("blocked_guest_wifi_input", "PICSimLabWifi picker")
         raise RuntimeError("Real guest did not leave Wi-Fi picker despite accepted QMP taps")
 
     def run(self, *, reboot_and_retrieve: bool = True) -> dict:
