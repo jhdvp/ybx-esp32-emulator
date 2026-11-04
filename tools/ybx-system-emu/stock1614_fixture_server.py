@@ -38,24 +38,103 @@ BOOKS = [
 SOURCES={"yandex":"yandex","wb":"wb","litres":"litres"}
 
 
-def make_server(port:int, epub:Path, evidence:Path):
+def reader_clipping(item, revision):
+    """Mirror the *production* clippings.reader_item / ClippingSync decoder.
+
+    Do not return the raw PUT body as a GET item: the reader requires a
+    monotonic revision plus numeric deleted and bounded integer fields.
+    """
+    if not isinstance(item, dict):
+        raise ValueError("clipping must be an object")
+    identifier=item.get("id")
+    if not (isinstance(identifier,str) and 1 <= len(identifier) <= 64 and
+            all("!" <= c <= "~" for c in identifier)):
+        raise ValueError("invalid clipping id")
+    deleted=item.get("deleted",0)
+    if type(deleted) is not int or deleted not in (0,1):
+        raise ValueError("invalid deleted flag")
+    row={"id":identifier,"deleted":deleted,"revision":revision}
+    if deleted:
+        return row
+    fields16=("spine","start_page","end_page","pages","start_word","end_word","words")
+    fields32=("created_at","layout_signature")
+    for field in fields16+fields32:
+        value=item.get(field)
+        upper=65535 if field in fields16 else 4294967295
+        if type(value) is not int or not 0 <= value <= upper:
+            raise ValueError("missing or invalid " + field)
+        row[field]=value
+    paragraph=item.get("para")
+    if paragraph is not None:
+        if type(paragraph) is not int or not 0 <= paragraph <= 65535:
+            raise ValueError("invalid paragraph")
+        row["para"]=paragraph
+    quote=item.get("text")
+    if not (isinstance(quote,str) and 0 < len(quote.encode("utf-8")) <= 4096
+            and "\x00" not in quote):
+        raise ValueError("invalid text")
+    row["text"]=quote
+    chapter=item.get("chapter","")
+    if not isinstance(chapter,str):
+        raise ValueError("invalid chapter")
+    row["chapter"]=chapter
+    start,end=item.get("start_offset"),item.get("end_offset")
+    if (start is None) != (end is None):
+        raise ValueError("unpaired offsets")
+    if start is not None:
+        if not (type(start) is int and type(end) is int and
+                0 <= start < end < 4294967295):
+            raise ValueError("invalid offsets")
+        row["start_offset"],row["end_offset"]=start,end
+    return row
+
+
+def seed_from_ledger(path):
+    """Only synthetic E2E data; infer the document from the last PUT route."""
+    ledger=json.loads(Path(path).read_text())
+    requests=[event for event in ledger.get("requests",[]) if
+              event.get("kind")=="clippings-put" and
+              event.get("path","").startswith("/kosync/api/v1/clippings/")]
+    items=ledger.get("last_clippings",[])
+    if not requests or not items:
+        raise ValueError("seed ledger lacks a clipping PUT and item")
+    document=requests[-1]["path"].rsplit("/",1)[-1]
+    if not re.fullmatch(r"[0-9a-f]{32}",document):
+        raise ValueError("unrecognized fixture document")
+    return {document:items}
+
+
+def make_server(port:int, epub:Path, evidence:Path, seed_clippings=None):
     events=[]
     accounts={"device_codes":0,"polls":0,"auth_success":0}
     data={"books": [], "last_clippings": [], "last_progress": None}
+    # Separate book histories keyed by document hash, with stable revisions.
+    # Seeded rows reproduce a remote account surviving a fixture restart.
+    histories={}
+    for document, items in (seed_clippings or {}).items():
+        existing={}
+        for item in items:
+            row=reader_clipping(item,len(existing)+1)
+            existing[row["id"]]=row
+        histories[document]=existing
     lock=Lock()
     evidence.parent.mkdir(parents=True,exist_ok=True)
 
-    def record(method,path,status,kind=""):
-        # No raw auth headers, data or user secrets in the log.
+    def record(method,path,status,kind="",safe_query=None):
+        # No raw auth headers or secrets in the log. Only log numeric
+        # Clippings pagination parameters; never log arbitrary URL queries.
         with lock:
-            events.append({"method":method,"path":path,"status":status,"kind":kind})
+            event={"method":method,"path":path,"status":status,"kind":kind}
+            if safe_query: event["query"]=safe_query
+            events.append(event)
             # Atomically publish each ledger snapshot. A CI test or a GUI
             # reader must never observe a truncated JSON file mid-write.
             snapshot = json.dumps({
                 "requests":events,"accounts":accounts,
                 "uploads":data["books"],
                 "last_progress":data["last_progress"],
-                "last_clippings":data["last_clippings"]
+                "last_clippings":data["last_clippings"],
+                "remote_clippings":histories
             },ensure_ascii=False,indent=2)
             staged = evidence.with_name(evidence.name + ".tmp")
             staged.write_text(snapshot, encoding="utf-8")
@@ -75,7 +154,13 @@ def make_server(port:int, epub:Path, evidence:Path):
             self.end_headers()
             # Complete the evidence record before unblocking the client:
             # otherwise a fast HTTP client can race the file-backed log.
-            record(self.command,urlsplit(self.path).path,status,kind)
+            uri=urlsplit(self.path)
+            pagination={}
+            if "/api/v1/clippings/" in uri.path:
+                params=parse_qs(uri.query)
+                pagination={key:params[key][0] for key in ("cursor","limit","format")
+                            if key in params and len(params[key])==1}
+            record(self.command,uri.path,status,kind,pagination)
             self.wfile.write(body)
 
         def reply(self,status,thing,kind=""):
@@ -117,8 +202,25 @@ def make_server(port:int, epub:Path, evidence:Path):
                 if not self.headers.get("x-auth-user") or not self.headers.get("x-auth-key"):
                     self.reply(401,{"error":"not_authenticated"},"clippings-denied")
                 else:
-                    self.reply(200,{"sync_version":2,"items":data["last_clippings"],
-                                    "cursor":len(data["last_clippings"]),"more":False},"clippings")
+                    document=path.rsplit("/",1)[-1]
+                    try:
+                        cursor=int(query.get("cursor",[0])[0])
+                        limit=int(query.get("limit",[1])[0])
+                        if cursor < 0 or limit < 1:
+                            raise ValueError()
+                    except ValueError:
+                        self.reply(400,{"error":"invalid_pagination"},"clippings-invalid")
+                        return
+                    cap=1 if query.get("format",["reader"])[0]=="reader" else min(100,limit)
+                    with lock:
+                        candidates=sorted((r.copy() for r in histories.get(document,{}).values()
+                                           if r["revision"]>cursor),
+                                          key=lambda r:(r["revision"],r["id"]))
+                    chosen=candidates[:cap]
+                    next_cursor=chosen[-1]["revision"] if chosen else cursor
+                    self.reply(200,{"sync_version":2,"items":chosen,
+                                    "cursor":next_cursor,"more":len(candidates)>len(chosen)},
+                               "clippings")
                 return
             if path.startswith("/api/v1/crosspoint/books/") and path.endswith("/download"):
                 if not self.guard(): return
@@ -195,8 +297,29 @@ def make_server(port:int, epub:Path, evidence:Path):
                 if not self.headers.get("x-auth-key"): self.reply(401,{"error":"not_authenticated"});return
                 try:body=json.loads(self.body())
                 except(ValueError,UnicodeDecodeError):self.reply(400,{"error":"bad_clipping"});return
-                with lock:data["last_clippings"]=body.get("items",[])
-                self.reply(200,{"sync_version":2,"accepted":len(data["last_clippings"])},"clippings-put")
+                try:
+                    batch=body["items"]
+                    if not isinstance(batch,list) or not 1 <= len(batch) <= 1:
+                        raise ValueError("one clipping per upload")
+                    document=path.rsplit("/",1)[-1]
+                    if not re.fullmatch(r"[0-9a-f]{32}",document):
+                        raise ValueError("invalid document")
+                    with lock:
+                        previous=histories.setdefault(document,{})
+                        new_revision=max((r["revision"] for r in previous.values()),default=0)+1
+                        row=reader_clipping(batch[0],new_revision)
+                        prior=previous.get(row["id"])
+                        changed=not prior or {k:v for k,v in prior.items() if k!="revision"} != {
+                            k:v for k,v in row.items() if k!="revision"}
+                        if changed:
+                            previous[row["id"]]=row
+                        data["last_clippings"]=batch
+                        effective_revision=previous[row["id"]]["revision"]
+                except (ValueError,KeyError,TypeError):
+                    self.reply(400,{"accepted":0,"error":"invalid_clipping"},"clippings-invalid")
+                    return
+                self.reply(200,{"accepted":1,"applied":int(changed),
+                                "revision":effective_revision},"clippings-put")
                 return
             self.reply(404,{"error":"no_route"},"missing")
 
@@ -208,9 +331,12 @@ def main():
     ap.add_argument("--port",type=int,default=18085)
     ap.add_argument("--epub",type=Path,default=Path("/out/mock.epub"))
     ap.add_argument("--evidence",type=Path,default=Path("/out/stock1614-fixture-requests.json"))
+    ap.add_argument("--seed-ledger",type=Path,
+                    help="Optional saved synthetic request ledger from a previous isolated QEMU run")
     args=ap.parse_args()
     assert args.epub.is_file()
-    srv=make_server(args.port,args.epub,args.evidence)
+    seed=seed_from_ledger(args.seed_ledger) if args.seed_ledger else None
+    srv=make_server(args.port,args.epub,args.evidence,seed_clippings=seed)
     print(f"QEMU fake YBX fixture listening on 0.0.0.0:{args.port}",flush=True)
     srv.serve_forever()
 
