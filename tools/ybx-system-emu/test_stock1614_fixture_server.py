@@ -87,6 +87,32 @@ class FixtureProtocolTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(len(json.loads(body)["items"]),3)
 
+    def test_reader_protocol_rejects_invalid_upload_shapes(self):
+        from stock1614_fixture_server import reader_clipping
+        valid={
+            "id":"fixture-valid","spine":0,"start_page":0,
+            "end_page":0,"pages":1,"start_word":0,"end_word":0,
+            "words":1,"created_at":1,"layout_signature":1,
+            "text":"hello","chapter":"",
+        }
+        for malformed in (
+            {k:v for k,v in valid.items() if k!="created_at"},
+            {**valid,"deleted":True},
+            {**valid,"start_offset":12},
+            {**valid,"revision":"1"},
+            {**valid,"id":" "},
+        ):
+            # A revision sent by the *client* is ignored: all other broken
+            # payloads must be rejected by the fixture just as production.
+            if malformed.get("revision")=="1":
+                continue
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                reader_clipping(malformed,1)
+        good=reader_clipping(valid,1)
+        self.assertEqual(good["deleted"],0)
+        self.assertEqual(good["revision"],1)
+        self.assertEqual(good["text"],"hello")
+
     def test_kosync_clipping_extension_and_event_without_production_secrets(self):
         clip = "/kosync/api/v1/clippings/" + "a"*32
         self.assertEqual(self.call(clip)[0],401)
@@ -94,13 +120,41 @@ class FixtureProtocolTests(unittest.TestCase):
         status, raw = self.call(clip + "?cursor=0&limit=1&format=reader",extra=auth)
         self.assertEqual(status,200)
         self.assertEqual(json.loads(raw)["sync_version"],2)
-        sample = {"id":"fixture-clip","text":"Selected text","spine":0}
+        sample = {
+            "id":"fixture-clip","text":"Selected text","spine":0,
+            "start_page":0,"end_page":0,"pages":1,
+            "start_word":2,"end_word":3,"words":2,
+            "chapter":"Overview","created_at":1793770365,
+            "layout_signature":3708546873,
+            "start_offset":12,"end_offset":26,
+        }
         status, raw = self.call(clip,method="PUT",body={"items":[sample]},extra=auth)
         self.assertEqual(status,200)
         self.assertEqual(json.loads(raw)["accepted"],1)
         status, raw = self.call(clip + "?cursor=0&limit=1&format=reader",extra=auth)
         self.assertEqual(status,200)
-        self.assertEqual(json.loads(raw)["items"],[sample])
+        response=json.loads(raw)
+        self.assertEqual(response["cursor"],1)
+        self.assertEqual(response["more"],False)
+        self.assertEqual(response["items"],[{**sample,"deleted":0,"revision":1}])
+        self.assertEqual(self.call(clip+"?cursor=1&limit=1&format=reader",extra=auth)[0],200)
+        self.assertEqual(json.loads(self.call(
+            clip+"?cursor=1&limit=1&format=reader",extra=auth)[1])["items"],[])
+        # Replaying the same clipping does not allocate a new revision.
+        self.assertEqual(json.loads(self.call(
+            clip,method="PUT",body={"items":[sample]},extra=auth)[1])["applied"],0)
+        newer={**sample,"id":"fixture-clip-2","text":"Another excerpt"}
+        self.assertEqual(self.call(clip,method="PUT",
+                                   body={"items":[newer]},extra=auth)[0],200)
+        first=json.loads(self.call(
+            clip+"?cursor=0&limit=1&format=reader",extra=auth)[1])
+        self.assertEqual(first["cursor"],1)
+        self.assertEqual(first["more"],True)
+        second=json.loads(self.call(
+            clip+"?cursor=1&limit=1&format=reader",extra=auth)[1])
+        self.assertEqual(second["cursor"],2)
+        self.assertEqual(second["items"][0]["text"],"Another excerpt")
+        self.assertEqual(second["more"],False)
         event="/api/v1/crosspoint/events"
         self.assertEqual(self.call(event,method="POST",body={"event":"book.downloaded"})[0],401)
         self.assertEqual(self.call(event,method="POST",body={"event":"book.downloaded"},

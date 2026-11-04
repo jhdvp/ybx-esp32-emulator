@@ -1,0 +1,95 @@
+{
+  "notes": "Official X4Pro firmware in QEMU guest, 100% synthetic local KoSync server",
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/kosync/api/v1/clippings/4216a23b2ad4764722a2f0d6076995a8",
+      "status": 200,
+      "kind": "clippings"
+    },
+    {
+      "method": "GET",
+      "path": "/kosync/api/v1/clippings/4216a23b2ad4764722a2f0d6076995a8",
+      "status": 200,
+      "kind": "clippings"
+    },
+    {
+      "method": "PUT",
+      "path": "/kosync/syncs/progress",
+      "status": 200,
+      "kind": "progress-put"
+    },
+    {
+      "method": "GET",
+      "path": "/kosync/api/v1/clippings/4216a23b2ad4764722a2f0d6076995a8",
+      "status": 200,
+      "kind": "clippings"
+    },
+    {
+      "method": "PUT",
+      "path": "/kosync/api/v1/clippings/4216a23b2ad4764722a2f0d6076995a8",
+      "status": 200,
+      "kind": "clippings-put"
+    },
+    {
+      "method": "GET",
+      "path": "/kosync/api/v1/clippings/4216a23b2ad4764722a2f0d6076995a8",
+      "status": 200,
+      "kind": "clippings"
+    },
+    {
+      "method": "GET",
+      "path": "/kosync/api/v1/clippings/4216a23b2ad4764722a2f0d6076995a8",
+      "status": 200,
+      "kind": "clippings"
+    },
+    {
+      "method": "PUT",
+      "path": "/kosync/syncs/progress",
+      "status": 200,
+      "kind": "progress-put"
+    }
+  ],
+  "remote_clippings": {
+    "4216a23b2ad4764722a2f0d6076995a8": {
+      "68cb340b35c664956807f4130816fb32": {
+        "id": "68cb340b35c664956807f4130816fb32",
+        "deleted": 0,
+        "revision": 1,
+        "spine": 0,
+        "start_page": 0,
+        "end_page": 0,
+        "pages": 1,
+        "start_word": 23,
+        "end_word": 23,
+        "words": 1,
+        "created_at": 1793770365,
+        "layout_signature": 3708546873,
+        "para": 2,
+        "text": "different",
+        "chapter": "Overview",
+        "start_offset": 149,
+        "end_offset": 158
+      },
+      "d2ab4b24d2de2fb52a82d7d8d885ff46": {
+        "id": "d2ab4b24d2de2fb52a82d7d8d885ff46",
+        "deleted": 0,
+        "revision": 2,
+        "spine": 0,
+        "start_page": 0,
+        "end_page": 0,
+        "pages": 1,
+        "start_word": 24,
+        "end_word": 24,
+        "words": 1,
+        "created_at": 1793777430,
+        "layout_signature": 3708546873,
+        "para": 2,
+        "text": "scenario.",
+        "chapter": "Overview",
+        "start_offset": 159,
+        "end_offset": 168
+      }
+    }
+  }
+}
