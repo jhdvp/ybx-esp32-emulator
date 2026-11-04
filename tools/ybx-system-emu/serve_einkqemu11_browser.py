@@ -54,6 +54,21 @@ PAGE = (LEGACY_PAGE
 
 W, H = 480, 800
 KNOWN_BINARY_SHA = "8fce2150c091ceb7b644ac7603169620e9fc171ebaa37bed8aece2a457dcbd6a"
+KNOWN_CHARGER_CANDIDATE_SHAS = frozenset({
+    "f527e80c2b2319b49d8776bc9002fa03d82191f6492c879d854cac8a46cc65cd",
+    "220f668cc4d0c093fbf292e962cd8c7e92801d75392356f0afc015b661588aef",
+})
+
+
+def verify_qemu_binary_sha(actual_sha: str, charger_candidate: bool) -> str:
+    """Fail closed: never label locally modified QEMU as the official release."""
+    if charger_candidate:
+        if actual_sha not in KNOWN_CHARGER_CANDIDATE_SHAS:
+            raise RuntimeError("QEMU11 X4 Pro GPIO21 candidate binary SHA mismatch")
+        return "x4pro-gpio21-charger-candidate"
+    if actual_sha != KNOWN_BINARY_SHA:
+        raise RuntimeError("QEMU11 official eink-qemu 0.9.2 binary SHA mismatch")
+    return "upstream-official"
 
 
 def file_sha(path):
@@ -152,8 +167,9 @@ class Qemu11:
         self.rom = args.rom_dir / "esp32s3_rev0_rom.bin"
         if not self.rom.is_file():
             raise RuntimeError("missing ESP32-S3 ROM from eink-qemu release")
-        if file_sha(args.qemu) != KNOWN_BINARY_SHA:
-            raise RuntimeError("not the audited eink-qemu 0.9.2 arm64 binary")
+        self.engine_sha256 = file_sha(args.qemu)
+        self.engine_variant = verify_qemu_binary_sha(
+            self.engine_sha256, bool(getattr(args, "charger_candidate", False)))
         self.fw_name = args.flash.name
         self.fw_sha = file_sha(args.flash)
         self.sidecar = self.persistent_dir / "selected-firmware.json"
@@ -296,7 +312,9 @@ class Qemu11:
                           self.media_initial["flash"], "initial_guest_sd_sha256":
                           self.media_initial["sd"]},
                 "engine": {"name": "serialx/eink-qemu", "version": "0.9.2",
-                           "qemu": "11.1.2", "wifi_nat": self.args.wifi},
+                           "qemu": "11.1.2", "wifi_nat": self.args.wifi,
+                           "variant": self.engine_variant,
+                           "binary_sha256": self.engine_sha256},
                 "power": {"available": self.args.enable_power,
                           "pressed": self.power_pressed},
                 "boot_wait_seconds": round(time.monotonic() - self.boot_time, 2)}
@@ -402,8 +420,17 @@ class Qemu11:
         return {"action": "reboot", "accepted": True}
 
 
+def page_for_engine(charger_candidate: bool) -> str:
+    if not charger_candidate:
+        return PAGE
+    return PAGE.replace(
+        "eink-qemu 0.9.2 · QEMU 11.1.2",
+        "eink-qemu 0.9.2 + X4 Pro GPIO21 patch · EXPERIMENTAL")
+
+
 def serve(args):
     engine = Qemu11(args)
+    page = page_for_engine(bool(getattr(args, "charger_candidate", False)))
     class Handler(BaseHTTPRequestHandler):
         def reply(self, status, data, content_type="application/json"):
             raw = json.dumps(data).encode() if not isinstance(data, bytes) else data
@@ -430,7 +457,7 @@ def serve(args):
             path = urlparse(self.path).path
             try:
                 if path in ("/", "/index.html"):
-                    self.reply(200, PAGE.encode(), "text/html; charset=utf-8")
+                    self.reply(200, page.encode(), "text/html; charset=utf-8")
                 elif path == "/api/state":
                     self.reply(200, engine.state())
                 elif path == "/screen.png":
@@ -500,6 +527,8 @@ if __name__ == "__main__":
     p.add_argument("--firmware-dir", type=Path, required=True)
     p.add_argument("--work-dir", type=Path, required=True)
     p.add_argument("--wifi", action="store_true", help="QEMU usermode NAT via PICSimLabWifi")
+    p.add_argument("--charger-candidate", action="store_true",
+                   help="opt into pinned local QEMU11 GPIO21 board patch; never claim official binary")
     p.add_argument("--enable-power", action="store_true",
                    help="opt-in 1.2s bounded virtual X4 Pro Power key")
     p.add_argument("--host", default="127.0.0.1")
