@@ -40,11 +40,14 @@ Patch: tools/ybx-system-emu/third_party/eink-qemu-0.9.2-x4pro-charging-gpio21.pa
 - Second independent test: native QMP GT911 input at pixel (160,342) activated Browse Files. At 36 seconds the real guest screen showed the SD card file browser, not an HTML imitation.
 - Original source Flash and SD SHA-256 values remained unchanged across both tests. Only private guest disk copies were writable.
 - Five new host unit tests passed for GPIO input decoder and real P6 framebuffer validation.
+- Complete host suite at this stage: 981 tests, 11 skipped by environment, zero failures.
 
 ## Remaining migration gates
 
-- Test genuine Power GPIO3 -> deep sleep -> RTC EXT1 wake on the patched QEMU11, including guest-driven reset and subsequent rendering.
-- Re-run original CrossPoint firmware native Wi-Fi scan, DHCP and HTTP 200 over QEMU NAT, plus stock firmware, and persistent Flash/SD across separate restarts.
+- Power/RTC passed on the first patched native build in isolated probe power-0121: original inkMOD after real Home, QMP Power held 1.5s, query-status RUNNING to SUSPENDED to RUNNING after second Power. Guest ROM logged rst:0x5 (DSLEEP), Home 480x800 re-rendered with no panic. A premature tap and -no-reboot option caused earlier failed harness attempts.
+- CrossPoint 2.0 RC native boot smoke passed on the same patched QEMU build (crosspoint-rc-0120): real 480x800 Home after 36s, correct UC8279 0x68 probe, 8MiB PSRAM telemetry, no panic, original media intact.
+- **Outstanding**: new Wi-Fi scan/DHCP/original guest HTTP 200 E2E using patched binary, and persistent Flash/SD reboots.
+- Validate original CrossPoint Wi-Fi scan, DHCP and HTTP 200 over QEMU NAT, plus stock firmware and persistent media across separate restarts.
 - Keep the stable 192.168.10.239:8784 and rollback untouched until ALL parity checks pass.
 - Separately report an inkMOD firmware bug: genuine cold USB-charging boot also enters the sleep renderer before display init. This must not be hidden by changing emulator charging semantics.
 
@@ -56,3 +59,29 @@ Native reproducible probe: tools/ybx-system-emu/probe_einkqemu11_inkmod_boot.py.
 - First original inkMOD Power test (0.85s hold) **did not** reach a confirmed QEMU suspended status within its deadline. This does NOT prove RTC EXT1 support yet. A longer 3.2s key-hold test was started separately; do not promote Power until a verified sleep->wake->Home cycle and SD integrity are shown.
 - Native Wi-Fi/DHCP/HTTP 200 has prior evidence on the **unpatched** QEMU11 reference and must be repeated against this patched SHA before production promotion.
 - The test outputs and guest media live outside Git; no proprietary flash or SD image is committed.
+
+## Runtime packaging caution
+
+The first patched build had optional runtime dependency on libsndio.so.7 absent in ybx-eink-qemu-runner:20261102, though it ran correctly in ybx-eink-qemu-builder:20261102. A second build is configured with --disable-sndio. Its SHA and original guest tests must be checked separately before promotion. Keep stable 8784 unchanged.
+
+## Final runnable build, separate from first builder-only build
+
+- Reconfigured isolated serialx 0.9.2 source with --disable-sndio.
+- Final binary SHA-256: 220f668cc4d0c093fbf292e962cd8c7e92801d75392356f0afc015b661588aef.
+- Runtime link check: no missing shared libraries in ybx-eink-qemu-runner:20261102; --version = QEMU 11.1.2.
+- Copied final binary to local pinned test artifacts; first build was not used for final acceptance.
+
+### Final real guest tests
+
+- Original unmodified inkMOD 1.1.10: 36-second real Home frame, native GT911 Browse Files tap changes guest frame, no panic, input source Flash/SD unchanged.
+- Original inkMOD GPIO3 Power: RUNNING -> SUSPENDED -> RUNNING on RTC EXT1 wake; original firmware returns to native Home, no panic, unchanged source Flash/SD.
+- CrossPoint 2.0 RC original: actual GT911 Home -> File Transfer -> Join a Network. Three scanned virtual SSIDs; associated PICSimLabWifi with DHCP address 10.0.2.15 and original firmware QR. Container-local NAT forwarded genuine guest HTTP 200, 2103 bytes. The rule was removed.
+- Persistence: the same private writable Flash and 128MiB FAT16 SD were used for the second QEMU process without re-creating them; real guest remounted SDMMC and navigated to its file list via native GT911 after reboot, no panic. Original source media remained read-only.
+- Stock 1.6.14 RC fixture (private QA Flash and SD): real 480x800 Home on final QEMU, no panic, original fixture media unchanged. **This is a boot-only smoke**, not a new claim of QR pairing, authentication, catalogs or quote sync.
+- Host regression suite: 981 tests, 11 skipped, zero failures.
+
+Machine-readable non-sensitive evidence is in evidence/inkmod-qemu11-gpio21/acceptance-20261104.json. Raw firmware, NVS, guest SD and writable image copies remain private local artifacts.
+
+### Promotion boundary
+
+Stable 8784 and its rollback remain in place. This confirms the corrected native QEMU11 engine can run the tested firmware scenarios, but not that *every* old YBX QOM/telemetry/browser capability has been ported. Switch the default only after a separate browser/session and downstream integration comparison, including ongoing plugin/KoSync and Stock quote-sync gates.
