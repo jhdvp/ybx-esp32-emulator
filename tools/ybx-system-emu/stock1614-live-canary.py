@@ -349,13 +349,17 @@ def verify_settings_toggles(base: str, *, live=False, container=None) -> dict:
             checks[key] = {"passed": True, "skipped": "not a stock firmware setting"}
             continue
         before = read_all()
-        put(key, True)
+        # Flip to the opposite of the current value: some stock defaults are already on
+        # (libraryUseMetadata=1), and OFF/ON enums come back as 0/1, not bools.
+        target = not bool(before.get(key))
+        put(key, target)
         after = read_all()
         diff = settings_diff(before, after, key_order)
         checks[key] = {
             "count": diff["count_after"],
+            "flipped_to": target,
             "only_key_changed": diff["changed_keys"] == [key],
-            "value_now_true": after.get(key) is True,
+            "value_now_true": bool(after.get(key)) == target,
             "unrelated_changed": diff["unrelated_changed"],
             "redacted_diff_rows": diff["changed_rows"],
         }
@@ -937,7 +941,8 @@ def run_live(args) -> int:
 
     def finish(rc: int) -> int:
         evidence["ok"] = bool(evidence.get("all_gates_pass", False))
-        out = args.evidence_dir / "0115-live-pairing-pause.json"
+        name = "0115-live-full.json" if evidence.get("mode") == "live-full" else "0115-live-pairing-pause.json"
+        out = args.evidence_dir / name
         out.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")
         print("redacted live evidence written to: %s" % out)
         return rc
@@ -1016,11 +1021,21 @@ def run_live(args) -> int:
             toggles = {"checks": {}}
         print("settings toggles ok=%s (71-value diff, values redacted)"
               % json.dumps({k: v["passed"] for k, v in toggles["checks"].items()}))
-        print("\n4) In the plugin UI create a disposable clipping on the test book "
-              "and trigger Sync. Confirm the quote appears in Yandex; create a "
-              "quote in Yandex; confirm the return journey. Then cold-restart "
-              "ONLY this container (%s) and confirm no duplicate." % container)
-        input("   Press <enter> once you have verified the Yandex round-trip: ")
+        evidence["settings_toggles"] = {k: v.get("passed") for k, v in toggles["checks"].items()}
+        print("\n4) Leave File Transfer (Back), open Plugins -> YBX, Fetch + open the test book,")
+        print("   long-press to save a disposable clipping, then Sync. Confirm the quote appears")
+        print("   in Yandex for the TEST account; create a quote in Yandex and confirm it reaches")
+        print("   the guest. Do NOT restart the container here (it would end this run).")
+        while True:
+            answer = input("   Type 'done' when the round-trip is verified, or 'fail' if it is not: ").strip().lower()
+            if answer in ("done", "fail"):
+                break
+        evidence["yandex_round_trip_owner"] = answer
+        evidence["mode"] = "live-full"
+        evidence["pairing_performed"] = "owner (test account)"
+        evidence["all_gates_pass"] = bool(evidence["all_gates_pass"]
+                                          and all(evidence["settings_toggles"].values())
+                                          and answer == "done")
         print("5) Disable Clippings in the plugin UI (old proof must be revoked, "
               "KOSync progress must keep working), then re-enable (a new, "
               "different proof must be minted).")
