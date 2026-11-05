@@ -943,7 +943,7 @@ def live_screenshot(evidence_dir: Path, name: str, preview: int) -> None:
 
 
 def run_live(args) -> int:
-    if not args.stop_at_pairing:
+    if not (args.stop_at_pairing or args.hold_at_pairing):
         print("Live owner flow is not ready: automatic navigation and web-panel activation are not verified. Refusing to run.")
         return 2
     preview, qmp = (args.preview_port, args.qmp_port) if args.preview_port else pick_free_pair()
@@ -1043,6 +1043,17 @@ def run_live(args) -> int:
         print("  Preview: http://127.0.0.1:%d/  (container %s)." % (preview, container))
         print("  Pair ONLY with the dedicated test Yandex account; never copy the")
         print("  QR/token/link into this repo or any log. No QR image is committed.")
+        if args.hold_at_pairing:
+            # Keep this run's container alive for an operator-driven session; Ctrl+C / SIGTERM tears it down.
+            import signal
+            signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+            print("\n--hold-at-pairing: container kept running (preview http://127.0.0.1:%d/, qmp %d). "
+                  "Ctrl+C or SIGTERM to tear down." % (preview, qmp), flush=True)
+            try:
+                while True:
+                    time.sleep(5)
+            except KeyboardInterrupt:
+                return finish(0)
         if args.stop_at_pairing:
             print("\n--stop-at-pairing: exiting before any pairing. Tearing down only "
                   "this run's container.")
@@ -1281,6 +1292,8 @@ def main() -> int:
                         default=HERE / "experiments" / "0115-evidence")
     parser.add_argument("--preview-port", type=int, default=0)
     parser.add_argument("--qmp-port", type=int, default=0)
+    parser.add_argument("--hold-at-pairing", action="store_true",
+                        help="reach the pairing pause, then keep the container for an operator-driven session")
     parser.add_argument("--stop-at-pairing", action="store_true",
                         help="With --live: prove boot + navigation to the device-code "
                              "pairing pause, then exit 0 without pairing (non-interactive).")

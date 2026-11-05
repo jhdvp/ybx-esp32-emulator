@@ -24,7 +24,7 @@ except urllib.error.HTTPError as e:
 print(json.dumps({'code':code,'headers':hdrs,'body':base64.b64encode(body).decode()}))
 '''
 PASS_HEADERS = ("content-type", "accept", "x-requested-with")
-DROP_RESPONSE = ("transfer-encoding", "connection", "content-length", "content-encoding")
+DROP_RESPONSE = ("transfer-encoding", "connection", "content-length")
 
 
 def make_handler(container):
@@ -66,11 +66,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--container", required=True)
     ap.add_argument("--port", type=int, default=8974)
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="bind address; my.ybx.app CORS allows private-LAN origins on port 80 only, not 127.0.0.1")
     a = ap.parse_args()
     if a.container in ("ybx-eink-qemu11-8950", "ybx-eink-qemu11-8964"):
         raise SystemExit("that container belongs to another run")
-    print("guest web UI: http://127.0.0.1:%d/" % a.port, flush=True)
-    ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(a.container)).serve_forever()
+    print("guest web UI: http://%s:%d/" % (a.host, a.port), flush=True)
+    ThreadingHTTPServer((a.host, a.port), make_handler(a.container)).serve_forever()
 
 
 if __name__ == "__main__":
