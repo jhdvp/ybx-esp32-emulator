@@ -1016,7 +1016,8 @@ def run_live(args) -> int:
         if plugins:
             live_screenshot(args.evidence_dir, "live-2-plugins", preview)
 
-        ybx = (live_drive(preview, NAV_PLUGINS_TO_YBX, "plugins", "wifi", wait_s=12)
+        # The Wi-Fi scan after launching YBX can take well over a minute in QEMU.
+        ybx = (live_drive(preview, NAV_PLUGINS_TO_YBX, "plugins", "wifi", wait_s=60)
                if plugins else False)
         evidence["steps"].append({"gate": "ybx_launched_wifi_picker", "pass": ybx,
                                   "frame_sha256": sha256_bytes(live_screen(preview))})
