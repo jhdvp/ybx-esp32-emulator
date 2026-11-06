@@ -37,7 +37,7 @@ sh /tmp/esp-emu-install.sh --version 0.51.0
 ```
 
 Verified installer checksum against official GitHub release assets before
-installation. The installed binary is `~/.local/bin/esp-emu`.
+installation. The installed binary is located at `$HOME/.local/bin/esp-emu`.
 
 ## Run both saved firmware images
 
