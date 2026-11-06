@@ -139,7 +139,7 @@ class Backend:
         tail = (self.workdir / 'uart.log').read_bytes()[-max_bytes:]
         return tail.decode('utf-8', errors='replace')
 
-    def restart_guest(self):
+    def restart_guest(self, timeout=5.0):
         """Recover suspended research guest without deleting persisted flash/SD.
 
         QEMU 11.1.2 does not implement the native board button / RTC EXT1 wake.
@@ -147,6 +147,25 @@ class Backend:
         Never misreport it as true hardware wakeup.
         """
         self.qmp.call('system_reset')
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            st = self.qmp.call('query-status')
+            if st.get('status') == 'prelaunch':
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError('Timed out waiting for guest to enter prelaunch after system_reset')
+
+        self.qmp.call('cont')
+
+        while time.monotonic() < deadline:
+            st = self.qmp.call('query-status')
+            if st.get('running') and st.get('status') == 'running':
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError('Timed out waiting for guest to resume after cont')
+
         return {'accepted': True, 'operation': 'cold-boot-reset',
                 'hardware_power_button_wake': False}
 
@@ -163,8 +182,8 @@ class Backend:
                 'experimental': True}
 
 
-def serve(backend, host='127.0.0.1', port=8810):
-    require_loopback(host, port)
+def make_handler(backend):
+    """Create HTTP request handler for the QEMU 11 preview bridge."""
     class Handler(BaseHTTPRequestHandler):
         def respond(self, status, data, mime='application/json'):
             self.send_response(status)
@@ -198,7 +217,17 @@ def serve(backend, host='127.0.0.1', port=8810):
                 size = int(self.headers.get('Content-Length', '0'))
                 if not 0 < size <= 512:
                     raise ValueError('invalid request size')
-                data = json.loads(self.rfile.read(size))
+                body = self.rfile.read(size)
+                if self.path == '/api/power':
+                    allowed = {f'http://127.0.0.1:{self.server.server_port}',
+                               f'http://localhost:{self.server.server_port}'}
+                    if self.headers.get('Origin') not in allowed:
+                        self.respond(403, b'{"error":"origin not allowed"}')
+                        return
+                    if self.headers.get_content_type() != 'application/json':
+                        self.respond(415, b'{"error":"application/json required"}')
+                        return
+                data = json.loads(body)
                 if self.path == '/api/power':
                     if data != {'action': 'restart'}:
                         raise ValueError('only explicit restart supported')
@@ -216,6 +245,12 @@ def serve(backend, host='127.0.0.1', port=8810):
             except Exception as e:
                 self.respond(503, json.dumps({'error': str(e)}).encode())
 
+    return Handler
+
+
+def serve(backend, host='127.0.0.1', port=8810):
+    require_loopback(host, port)
+    Handler = make_handler(backend)
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f'Native eink-qemu 11.1.2 preview: http://{host}:{port}/', flush=True)
     httpd.serve_forever()
