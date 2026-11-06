@@ -62,7 +62,7 @@ The **experimental, independent** browser preview runs at **`http://127.0.0.1:88
 > [!WARNING]
 **0108 browser session parity:** A second, opt-in [YBX-compatible QEMU11 browser](tools/ybx-system-emu/experiments/0108-einkqemu11-browser-session-20261102.md) adds persistent guest Flash/SD, a firmware picker, USB-CDC UART, genuine UC8279 frame updates, native Wi-Fi NAT and an optional auto-releasing Power control. Launch privately with `bash tools/ybx-system-emu/start_einkqemu11_browser.sh` (host loopback only, default port `8806`); use `YBX_EINK11_WIFI=1` for guest NAT. Existing 0107 lightweight preview remains supported. No production 8784 switch while inkMOD crashes.
 
-> **The production `192.168.10.239:8784` has NOT been replaced yet.** Original **inkMOD 1.1.10** currently crashes on the upstream QEMU11 candidate (`Core 1 LoadProhibited`, PC `0x4204541c`, `EXCVADDR=0x60f0`), both with and without a NIC. We will not lose inkMOD/RTC functionality or the stable saved flash/SD just to claim a newer QEMU version. See [the migration acceptance report](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md).
+> **The production emulator instance (port 8784) has NOT been replaced yet.** Original **inkMOD 1.1.10** currently crashes on the upstream QEMU11 candidate (`Core 1 LoadProhibited`, PC `0x4204541c`, `EXCVADDR=0x60f0`), both with and without a NIC. We will not lose inkMOD/RTC functionality or the stable saved flash/SD just to claim a newer QEMU version. See [the migration acceptance report](tools/ybx-system-emu/experiments/0107-eink-qemu-11-upstream-migration-20261102.md).
 
 ## Emulation status
 
