@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import zlib
 
 import eink_qemu11_preview_bridge as bridge
+import serve_einkqemu11_browser as native_browser
 
 ROOT = Path(__file__).resolve().parent
 LOCK = ROOT / 'third_party/eink-qemu-0.9.2.lock.json'
@@ -108,6 +109,33 @@ class PreviewV11Tests(unittest.TestCase):
         self.assertIn('[[ "$WORK" = /* && ! -e "$WORK" ]]', s)
         self.assertNotIn('docker stop', s)
         result = subprocess.run(['bash', '-n', str(START)], capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+    def test_approved_binaries_allow_exact_official_and_gpio21_builds_only(self):
+        approved = native_browser.APPROVED_BINARY_SHAS
+        self.assertIn(native_browser.KNOWN_BINARY_SHA, approved)
+        self.assertIn(native_browser.PATCHED_BINARY_SHA, approved)
+        self.assertEqual(len(approved), 2)
+        for sha in approved:
+            with self.subTest(sha=sha), patch.object(native_browser, 'file_sha', return_value=sha):
+                self.assertEqual(native_browser.require_approved_qemu_binary('/private/qemu'), sha)
+        with patch.object(native_browser, 'file_sha', return_value='0' * 64):
+            with self.assertRaisesRegex(RuntimeError, 'not an audited'):
+                native_browser.require_approved_qemu_binary('/private/not-verified')
+
+    def test_patched_browser_launcher_is_loopback_and_optin(self):
+        start = ROOT / "start_eink_qemu11_patched_browser.sh"
+        script = start.read_text()
+        self.assertIn("220f668cc4d0c093fbf292e962cd8c7e92801d75392356f0afc015b661588aef",script)
+        self.assertIn("127.0.0.1:$PORT:$PORT", script)
+        self.assertIn("--network bridge", script)
+        self.assertIn("--reuse", script)
+        self.assertIn("Existing container is never replaced", script)
+        self.assertIn('PORT="8913"', script)
+        self.assertIn("QEMU binary SHA mismatch", script)
+        self.assertNotIn('--network host', script)
+        result = subprocess.run(["bash", "-n", str(start)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_http_status_never_invents_wifi_connected(self):

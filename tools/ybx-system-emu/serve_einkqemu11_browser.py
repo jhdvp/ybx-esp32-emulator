@@ -54,11 +54,25 @@ PAGE = (LEGACY_PAGE
 
 W, H = 480, 800
 KNOWN_BINARY_SHA = "8fce2150c091ceb7b644ac7603169620e9fc171ebaa37bed8aece2a457dcbd6a"
+# Pinned source serialx/eink-qemu d1b24a5 + reviewed X4 Pro GPIO21 charger
+# STAT patch (merged into YBX emulator as PR #22), built --disable-sndio
+# and accepted with native inkMOD Power / CrossPoint NAT / SD persistence.
+PATCHED_BINARY_SHA = "220f668cc4d0c093fbf292e962cd8c7e92801d75392356f0afc015b661588aef"
+APPROVED_BINARY_SHAS = frozenset((KNOWN_BINARY_SHA, PATCHED_BINARY_SHA))
+
 
 
 def file_sha(path):
     with Path(path).open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def require_approved_qemu_binary(path):
+    """Only known audited release/build binaries can reach guest execution."""
+    actual = file_sha(path)
+    if actual not in APPROVED_BINARY_SHAS:
+        raise RuntimeError("QEMU11 binary SHA is not an audited allowed release/build")
+    return actual
 
 
 def decode_png_rgb(png):
@@ -152,8 +166,7 @@ class Qemu11:
         self.rom = args.rom_dir / "esp32s3_rev0_rom.bin"
         if not self.rom.is_file():
             raise RuntimeError("missing ESP32-S3 ROM from eink-qemu release")
-        if file_sha(args.qemu) != KNOWN_BINARY_SHA:
-            raise RuntimeError("not the audited eink-qemu 0.9.2 arm64 binary")
+        self.qemu_sha256 = require_approved_qemu_binary(args.qemu)
         self.fw_name = args.flash.name
         self.fw_sha = file_sha(args.flash)
         self.sidecar = self.persistent_dir / "selected-firmware.json"
