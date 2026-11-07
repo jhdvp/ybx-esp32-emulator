@@ -184,6 +184,22 @@ class PreviewV11Tests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'resume'):
                 backend.restart_guest(timeout=5.0)
 
+    def test_restart_of_running_guest_is_accepted_without_cont(self):
+        fake = Mock()
+        fake.call.side_effect = [
+            {},  # system_reset
+            {'running': True, 'status': 'running'},  # query-status
+        ]
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        result = backend.restart_guest()
+        self.assertEqual(fake.call.call_args_list, [
+            unittest.mock.call('system_reset'),
+            unittest.mock.call('query-status'),
+        ])
+        self.assertEqual(result['operation'], 'cold-boot-reset')
+        self.assertTrue(result['accepted'])
+        self.assertFalse(result['hardware_power_button_wake'])
+
     def test_restart_failure_is_not_reported_as_success(self):
         fake = Mock()
         fake.call.side_effect = RuntimeError('QMP reset refused')

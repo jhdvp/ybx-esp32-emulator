@@ -145,26 +145,34 @@ class Backend:
         QEMU 11.1.2 does not implement the native board button / RTC EXT1 wake.
         system_wakeup fails from suspended state; system_reset is a COLD BOOT.
         Never misreport it as true hardware wakeup.
+
+        A reset of an already running guest resumes it without stopping in
+        prelaunch, so that case must not be reported as a timeout.
         """
         self.qmp.call('system_reset')
         deadline = time.monotonic() + timeout
+        needs_cont = False
         while time.monotonic() < deadline:
             st = self.qmp.call('query-status')
             if st.get('status') == 'prelaunch':
+                needs_cont = True
                 break
-            time.sleep(0.05)
-        else:
-            raise RuntimeError('Timed out waiting for guest to enter prelaunch after system_reset')
-
-        self.qmp.call('cont')
-
-        while time.monotonic() < deadline:
-            st = self.qmp.call('query-status')
             if st.get('running') and st.get('status') == 'running':
                 break
             time.sleep(0.05)
         else:
-            raise RuntimeError('Timed out waiting for guest to resume after cont')
+            raise RuntimeError('Timed out waiting for guest to enter prelaunch or running after system_reset')
+
+        if needs_cont:
+            self.qmp.call('cont')
+
+            while time.monotonic() < deadline:
+                st = self.qmp.call('query-status')
+                if st.get('running') and st.get('status') == 'running':
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError('Timed out waiting for guest to resume after cont')
 
         return {'accepted': True, 'operation': 'cold-boot-reset',
                 'hardware_power_button_wake': False}
