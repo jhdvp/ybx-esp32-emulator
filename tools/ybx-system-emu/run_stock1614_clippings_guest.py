@@ -38,6 +38,7 @@ WIFI_FIXTURE_COORDS = (138, 193)
 
 
 def read_ledger(path: Path) -> dict:
+    """Read recorded requests and clippings from the synthetic fixture ledger."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -95,6 +96,7 @@ class StockClippingsGuest:
     def __init__(self, *, preview_port: int, qmp_port: int,
                  evidence: Path, out: Path, quote: str = "different",
                  tap_delay: float = 2.0):
+        """Configure the isolated test runner targeting a specific guest preview port."""
         if not (8800 <= preview_port < 65535 and
                 8800 <= qmp_port < 65535 and
                 preview_port != qmp_port and
@@ -108,14 +110,17 @@ class StockClippingsGuest:
         self.out = out
         self.quote = quote
         self.delay = tap_delay
+        self._sync_baseline = 0
 
     def get(self, path: str) -> bytes:
+        """Fetch raw bytes from an HTTP endpoint on the guest preview server."""
         with urlopen(self.preview + path, timeout=12) as response:
             if response.status != 200:
                 raise RuntimeError(f"Preview {path}: {response.status}")
             return response.read()
 
     def assert_isolated_qemu(self) -> None:
+        """Verify the preview server is an isolated experimental QEMU instance."""
         state = json.loads(self.get("/api/state"))
         if (state.get("firmware_model") !=
                 "original X4 Pro, external 11.1.2 QEMU" or
@@ -127,6 +132,7 @@ class StockClippingsGuest:
         self.out.mkdir(parents=True, exist_ok=False)
 
     def tap(self, where: tuple[int, int], name: str) -> None:
+        """Send a touch tap event via QMP through the preview bridge."""
         x, y = where
         req = Request(
             self.preview + "/api/tap",
@@ -187,6 +193,7 @@ class StockClippingsGuest:
         return results
 
     def capture(self, name: str) -> str:
+        """Save the current guest frame as a PNG artifact and return its SHA-256."""
         frame = self.get("/screen.png")
         if not frame.startswith(b"\x89PNG\r\n\x1a\n"):
             raise RuntimeError("Guest E-Ink screenshot is not a PNG")
@@ -209,6 +216,7 @@ class StockClippingsGuest:
     def wait_pixels(self, box: tuple[int, int, int, int], above: float,
                     name: str, timeout_s: float = 18.0,
                     *, reverse: bool = False) -> None:
+        """Wait until the dark pixel ratio in a given bounding box crosses the threshold."""
         end = time.monotonic() + timeout_s
         while time.monotonic() < end:
             ratio = self.dark_ratio(box)
@@ -218,6 +226,7 @@ class StockClippingsGuest:
         raise RuntimeError(f"Guest E-Ink never displayed {name}, last ratio {ratio:.3f}")
 
     def wait_for(self, predicate, name: str, timeout_s: float = 50) -> dict:
+        """Poll the fixture ledger until the predicate succeeds or timeout is reached."""
         until = time.monotonic() + timeout_s
         last = {}
         while time.monotonic() < until:
@@ -233,6 +242,7 @@ class StockClippingsGuest:
         return matches_guest_screen(self.get("/screen.png"), name)
 
     def wait_screen(self, name: str, timeout_s: float = 24.0) -> None:
+        """Poll the guest display until the expected screen anchor appears."""
         until = time.monotonic() + timeout_s
         while time.monotonic() < until:
             if self.screen_is(name):
@@ -265,6 +275,7 @@ class StockClippingsGuest:
         self.wait_screen(target, timeout_s=10)
 
     def open_reader_from_home(self, *, has_recent_book: bool = False) -> None:
+        """Navigate from the Stock home screen to the EPUB reader interface."""
         self.capture("14-reboot-home" if has_recent_book else "01-home")
         if self.screen_is("reader"):
             return
@@ -286,6 +297,7 @@ class StockClippingsGuest:
         self.capture("15-reboot-reader" if has_recent_book else "02-reader")
 
     def open_more(self) -> None:
+        """Open the reader toolbar and bring up the More settings overlay."""
         if self.screen_is("more"):
             return
         # Only a matching More header is proof of a successful overlay.
@@ -300,6 +312,7 @@ class StockClippingsGuest:
         self.wait_screen("more", timeout_s=6)
 
     def create_clipping(self) -> None:
+        """Highlight a sample word in the reader and save it as an on-device clipping."""
         self.open_more()
         for attempt in range(3):
             self.tap(CREATE_CLIP_COORDS, f"Create Clipping {attempt + 1}")
@@ -324,15 +337,20 @@ class StockClippingsGuest:
         self.wait_screen("created", timeout_s=12)
         self.capture("05-clipping-verified-in-menu")
 
-    def _guest_sync_request_seen(self) -> bool:
+    def _guest_sync_request_count(self) -> int:
         """Count only actual firmware-originated requests, not fixture probes."""
-        return any(
+        return sum(
             e.get("kind") in ("clippings", "clippings-put", "progress-put")
             and e.get("status") not in (None, 0)
             for e in read_ledger(self.evidence).get("requests", [])
         )
 
+    def _guest_sync_request_seen(self) -> bool:
+        """Check whether new guest sync traffic has arrived since the sync baseline."""
+        return self._guest_sync_request_count() > getattr(self, "_sync_baseline", 0)
+
     def _record_sync_block(self, status: str, stage: str) -> None:
+        """Write diagnostic metadata when sync fails or gets blocked before completion."""
         report = {
             "status": status,
             "stage": stage,
@@ -365,6 +383,7 @@ class StockClippingsGuest:
         raise RuntimeError("Real guest produced no KOSync or Clippings HTTP traffic")
 
     def sync_clippings(self, *, retry: bool = False) -> None:
+        """Trigger KOSync progress synchronization from the More overlay."""
         self.open_more()
         for attempt in range(5):
             if self.screen_is("sync"):
@@ -372,6 +391,7 @@ class StockClippingsGuest:
             self.tap(PAGE_MORE_COORDS, f"More page down {attempt + 1}")
         self.wait_screen("sync", timeout_s=12)
         self.capture("10-more-with-sync" if retry else "06-more-with-sync")
+        self._sync_baseline = self._guest_sync_request_count()
         self.tap(SYNC_PROGRESS_COORDS, "Sync Progress")
         # A configured radio may skip Wi-Fi selection entirely; do not tap
         # arbitrary coordinates unless the real AP picker is visible.
@@ -399,6 +419,7 @@ class StockClippingsGuest:
         raise RuntimeError("Real guest did not leave Wi-Fi picker despite accepted QMP taps")
 
     def run(self, *, reboot_and_retrieve: bool = True) -> dict:
+        """Execute the full end-to-end reading, clipping, and sync verification sequence."""
         self.assert_isolated_qemu()
         self.open_reader_from_home()
         self.create_clipping()
@@ -458,6 +479,7 @@ class StockClippingsGuest:
 
 
 def main() -> None:
+    """CLI entrypoint to run isolated Stock 1.6.14 guest clippings verification."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preview-port", required=True, type=int)
     parser.add_argument("--qmp-port", required=True, type=int)

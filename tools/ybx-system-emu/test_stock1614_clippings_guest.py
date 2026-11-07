@@ -174,6 +174,37 @@ class StockGuestVerdictTests(unittest.TestCase):
             self.assertEqual(report['status'], 'blocked_guest_no_sync_traffic')
             self.assertEqual(report['stage'], 'Stock Wi-Fi connecting')
 
+    def test_sync_request_seen_detects_new_traffic_after_baseline(self):
+        with tempfile.TemporaryDirectory() as work:
+            p = Path(work)
+            ledger_file = p / "ledger.json"
+            guest = StockClippingsGuest(
+                preview_port=8896, qmp_port=8897,
+                evidence=ledger_file, out=p / "screens")
+            import json
+            ledger_file.write_text(json.dumps({
+                "requests": [
+                    {"kind": "clippings", "status": 200},
+                    {"kind": "health", "status": 200},
+                ]
+            }))
+            self.assertEqual(guest._guest_sync_request_count(), 1)
+            # Before setting baseline, count (1) > baseline (0)
+            self.assertTrue(guest._guest_sync_request_seen())
+            # After recording baseline for current sync, seen is False
+            guest._sync_baseline = guest._guest_sync_request_count()
+            self.assertFalse(guest._guest_sync_request_seen())
+            # New traffic arrives
+            ledger_file.write_text(json.dumps({
+                "requests": [
+                    {"kind": "clippings", "status": 200},
+                    {"kind": "health", "status": 200},
+                    {"kind": "progress-put", "status": 200},
+                ]
+            }))
+            self.assertEqual(guest._guest_sync_request_count(), 2)
+            self.assertTrue(guest._guest_sync_request_seen())
+
     def test_refuses_production_and_non_qemu_ports(self):
         with tempfile.TemporaryDirectory() as work:
             p=Path(work)
