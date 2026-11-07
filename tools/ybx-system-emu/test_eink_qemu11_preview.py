@@ -68,6 +68,14 @@ class PreviewV11Tests(unittest.TestCase):
             with self.subTest(host=host, port=port), self.assertRaises(ValueError):
                 bridge.require_loopback(host, port)
 
+    def test_browser_click_uses_short_tap_not_qemu_long_press(self):
+        # With -icount shift=0, 170 ms host press was interpreted by the
+        # actual Stock guest as a long press, opening Uninstall YBX.
+        # A 60 ms touch opened its regular catalog/Wi-Fi workflow instead.
+        self.assertIn('duration_ms:60', bridge.INDEX)
+        self.assertNotIn('duration_ms:170', bridge.INDEX)
+        self.assertIn('Short 60 ms taps', bridge.INDEX)
+
     def test_touch_coordinates_scaled_and_release_always_sent(self):
         qmp = bridge.QMP()
         qmp.call = Mock(return_value={})

@@ -100,7 +100,7 @@ INDEX = '''<!doctype html><html lang="en"><meta charset="utf-8">
 <title>YBX · QEMU 11.1.2 Preview</title>
 <style>body{margin:0;background:#e9e9e6;color:#1d1d1d;font:14px system-ui,sans-serif}header{padding:16px 22px;background:#fafaf8;border-bottom:1px solid #ccc;display:flex;gap:16px;justify-content:space-between;align-items:center}h1{font-size:17px;margin:0}small{color:#777}main{display:grid;grid-template-columns:minmax(240px,480px) minmax(240px,420px);gap:24px;justify-content:center;padding:24px}#screen{width:100%;height:auto;image-rendering:auto;box-shadow:0 2px 14px #0002;border:1px solid #bbb;background:#fff;cursor:crosshair;touch-action:manipulation}pre{background:#181818;color:#eee;overflow:auto;white-space:pre-wrap;max-height:65vh;padding:15px;border-radius:6px;font:11px ui-monospace,monospace}section{min-width:0}.notice{padding:12px;background:#fff;border:1px solid #ccc;margin-bottom:12px;line-height:1.55}button{background:#222;color:#fff;padding:7px 14px;border:0;border-radius:5px;cursor:pointer}#info{font-family:ui-monospace,monospace;font-size:12px;line-height:2;overflow-wrap:anywhere}@media(max-width:750px){main{grid-template-columns:minmax(250px,480px);padding:12px;gap:14px}}</style>
 <header><div><h1>YBX / QEMU 11.1.2 · X4 Pro</h1><small>eink-qemu 0.9.2 • experimental • original firmware</small></div><div><button onclick="restartGuest()">Power / Restart</button> <button onclick="refresh()">Refresh</button></div></header>
-<main><section><img id="screen" width="480" height="800" alt="X4 Pro native QEMU screen"><div id="info">Connecting to QMP…</div></section><section><div class="notice"><b>Isolated research environment.</b><div>Tap to send a real GT911 touch. This QEMU cannot emulate the X4 Pro GPIO3 power-button wake yet. Power / Restart performs a virtual chip reset (cold boot), preserving this guest&#39;s writable flash and SD. It is <b>not</b> a validated deep-sleep wakeup. The production 8784 remains untouched.</div></div><h2>Firmware UART</h2><pre id="uart">Loading…</pre></section></main>
+<main><section><img id="screen" width="480" height="800" alt="X4 Pro native QEMU screen"><div id="info">Connecting to QMP…</div></section><section><div class="notice"><b>Isolated research environment.</b><div>Tap to send a real GT911 touch. Short 60 ms taps avoid accidental long-press/uninstall actions under accelerated QEMU time. This QEMU cannot emulate the X4 Pro GPIO3 power-button wake yet. Power / Restart performs a virtual chip reset (cold boot), preserving this guest&#39;s writable flash and SD. It is <b>not</b> a validated deep-sleep wakeup. The production 8784 remains untouched.</div></div><h2>Firmware UART</h2><pre id="uart">Loading…</pre></section></main>
 <script>
 let busy=false,seq=0;const panel=document.querySelector('#screen');
 async function restartGuest(){
@@ -114,7 +114,7 @@ async function restartGuest(){
   } catch(error) {document.querySelector('#info').textContent=String(error)}
 }
 async function refresh(){if(busy)return;busy=true;try{let [state,log]=await Promise.all([fetch('/api/state'),fetch('/api/uart?tail=5000')]);let s=await state.json(),l=await log.json();if(!state.ok)throw Error(s.error);document.querySelector('#info').textContent=`QMP: ${s.qmp_status} · boot: ${s.home_log_observed?'Home reached':'waiting'} · ${s.frame_sha256?.slice(0,16)||'no frame'}`;document.querySelector('#uart').textContent=l.tail;panel.src='/screen.png?v='+(++seq)}catch(e){document.querySelector('#info').textContent='Error: '+e.message}finally{busy=false}}
-panel.addEventListener('click',async e=>{let r=panel.getBoundingClientRect(),x=Math.min(479,Math.max(0,Math.floor((e.clientX-r.left)*480/r.width))),y=Math.min(799,Math.max(0,Math.floor((e.clientY-r.top)*800/r.height)));try{let res=await fetch('/api/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,duration_ms:170})});if(!res.ok)throw Error(await res.text());setTimeout(refresh,600)}catch(err){document.querySelector('#info').textContent=err.message}});
+panel.addEventListener('click',async e=>{let r=panel.getBoundingClientRect(),x=Math.min(479,Math.max(0,Math.floor((e.clientX-r.left)*480/r.width))),y=Math.min(799,Math.max(0,Math.floor((e.clientY-r.top)*800/r.height)));try{let res=await fetch('/api/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,duration_ms:60})});if(!res.ok)throw Error(await res.text());setTimeout(refresh,600)}catch(err){document.querySelector('#info').textContent=err.message}});
 refresh();setInterval(refresh,3000);
 </script></html>'''
 
@@ -243,7 +243,7 @@ def make_handler(backend):
                     return
                 if type(data.get('x')) is not int or type(data.get('y')) is not int:
                     raise ValueError('coordinates must be integers')
-                duration = data.get('duration_ms', 170)
+                duration = data.get('duration_ms', 60)
                 if type(duration) is not int:
                     raise ValueError('duration must be integer')
                 backend.qmp.tap(data['x'], data['y'], duration)
