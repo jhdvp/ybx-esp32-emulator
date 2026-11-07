@@ -1,10 +1,13 @@
 """Offline safety, input and lossless panel contracts for the 0107 preview."""
 import hashlib
+import http.client
+from http.server import ThreadingHTTPServer
 import json
 from pathlib import Path
 import re
 import struct
 import subprocess
+import threading
 import unittest
 from unittest.mock import Mock, patch
 import zlib
@@ -103,7 +106,6 @@ class PreviewV11Tests(unittest.TestCase):
         result = subprocess.run(['bash', '-n', str(START)], capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-
     def test_approved_binaries_allow_exact_official_and_gpio21_builds_only(self):
         approved = native_browser.APPROVED_BINARY_SHAS
         self.assertIn(native_browser.KNOWN_BINARY_SHA, approved)
@@ -129,6 +131,145 @@ class PreviewV11Tests(unittest.TestCase):
         self.assertNotIn('--network host', script)
         result = subprocess.run(["bash", "-n", str(start)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_restart_is_cold_boot_not_hardware_wakeup(self):
+        fake = Mock()
+        fake.call.side_effect = [
+            {},  # system_reset
+            {'running': False, 'status': 'prelaunch'},  # query-status
+            {},  # cont
+            {'running': True, 'status': 'running'},  # query-status
+        ]
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        result = backend.restart_guest()
+        self.assertEqual(fake.call.call_args_list, [
+            unittest.mock.call('system_reset'),
+            unittest.mock.call('query-status'),
+            unittest.mock.call('cont'),
+            unittest.mock.call('query-status'),
+        ])
+        self.assertEqual(result['operation'], 'cold-boot-reset')
+        self.assertTrue(result['accepted'])
+        self.assertFalse(result['hardware_power_button_wake'])
+
+    def test_restart_prelaunch_timeout(self):
+        fake = Mock()
+        def mock_call(cmd, args=None):
+            if cmd == 'system_reset':
+                return {}
+            if cmd == 'query-status':
+                return {'running': False, 'status': 'suspended'}
+            return {}
+        fake.call.side_effect = mock_call
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        with patch.object(bridge.time, 'monotonic', side_effect=[1.0, 1.0, 10.0]), \
+             patch.object(bridge.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'prelaunch'):
+                backend.restart_guest(timeout=5.0)
+
+    def test_restart_running_timeout(self):
+        fake = Mock()
+        def mock_call(cmd, args=None):
+            if cmd == 'system_reset':
+                return {}
+            if cmd == 'query-status':
+                return {'running': False, 'status': 'prelaunch'}
+            if cmd == 'cont':
+                return {}
+            return {}
+        fake.call.side_effect = mock_call
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        with patch.object(bridge.time, 'monotonic', side_effect=[1.0, 1.0, 2.0, 2.0, 10.0]), \
+             patch.object(bridge.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'resume'):
+                backend.restart_guest(timeout=5.0)
+
+    def test_restart_of_running_guest_is_accepted_without_cont(self):
+        fake = Mock()
+        fake.call.side_effect = [
+            {},  # system_reset
+            {'running': True, 'status': 'running'},  # query-status
+        ]
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        result = backend.restart_guest()
+        self.assertEqual(fake.call.call_args_list, [
+            unittest.mock.call('system_reset'),
+            unittest.mock.call('query-status'),
+        ])
+        self.assertEqual(result['operation'], 'cold-boot-reset')
+        self.assertTrue(result['accepted'])
+        self.assertFalse(result['hardware_power_button_wake'])
+
+    def test_restart_failure_is_not_reported_as_success(self):
+        fake = Mock()
+        fake.call.side_effect = RuntimeError('QMP reset refused')
+        backend = bridge.Backend('/tmp/nonexistent', fake)
+        with self.assertRaisesRegex(RuntimeError, 'reset refused'):
+            backend.restart_guest()
+
+    def test_power_endpoint_origin_and_content_type(self):
+        backend = Mock()
+        backend.restart_guest.return_value = {'accepted': True, 'operation': 'cold-boot-reset'}
+        handler_cls = bridge.make_handler(backend)
+        handler_cls.log_message = lambda self, *args: None
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler_cls)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            def post(path, body, headers):
+                req_headers = {'Connection': 'close'}
+                req_headers.update(headers)
+                conn = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+                try:
+                    conn.request('POST', path, body=body, headers=req_headers)
+                    res = conn.getresponse()
+                    return res.status, res.read()
+                finally:
+                    conn.close()
+
+            # Allowed origins with application/json
+            for origin in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
+                backend.restart_guest.reset_mock()
+                status, payload = post('/api/power', b'{"action":"restart"}',
+                                       {'Origin': origin, 'Content-Type': 'application/json'})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(payload)['accepted'], True)
+                backend.restart_guest.assert_called_once()
+
+            # Disallowed origins
+            for bad_origin in (None, 'http://example.com', f'http://127.0.0.1:{port + 1}'):
+                backend.restart_guest.reset_mock()
+                headers = {'Content-Type': 'application/json'}
+                if bad_origin:
+                    headers['Origin'] = bad_origin
+                status, payload = post('/api/power', b'{"action":"restart"}', headers)
+                self.assertEqual(status, 403)
+                self.assertIn(b'origin not allowed', payload)
+                backend.restart_guest.assert_not_called()
+
+            # Disallowed content-types
+            for bad_ct in (None, 'text/plain', 'application/x-www-form-urlencoded'):
+                backend.restart_guest.reset_mock()
+                headers = {'Origin': f'http://127.0.0.1:{port}'}
+                if bad_ct:
+                    headers['Content-Type'] = bad_ct
+                status, payload = post('/api/power', b'{"action":"restart"}', headers)
+                self.assertEqual(status, 415)
+                self.assertIn(b'application/json required', payload)
+                backend.restart_guest.assert_not_called()
+
+            # Invalid action
+            status, payload = post('/api/power', b'{"action":"shutdown"}',
+                                   {'Origin': f'http://127.0.0.1:{port}',
+                                    'Content-Type': 'application/json'})
+            self.assertEqual(status, 400)
+            self.assertIn(b'only explicit restart supported', payload)
+            backend.restart_guest.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_http_status_never_invents_wifi_connected(self):
         b = bridge.Backend('/tmp/nonexistent', Mock())

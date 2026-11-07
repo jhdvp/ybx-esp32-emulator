@@ -99,10 +99,20 @@ INDEX = '''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YBX · QEMU 11.1.2 Preview</title>
 <style>body{margin:0;background:#e9e9e6;color:#1d1d1d;font:14px system-ui,sans-serif}header{padding:16px 22px;background:#fafaf8;border-bottom:1px solid #ccc;display:flex;gap:16px;justify-content:space-between;align-items:center}h1{font-size:17px;margin:0}small{color:#777}main{display:grid;grid-template-columns:minmax(240px,480px) minmax(240px,420px);gap:24px;justify-content:center;padding:24px}#screen{width:100%;height:auto;image-rendering:auto;box-shadow:0 2px 14px #0002;border:1px solid #bbb;background:#fff;cursor:crosshair;touch-action:manipulation}pre{background:#181818;color:#eee;overflow:auto;white-space:pre-wrap;max-height:65vh;padding:15px;border-radius:6px;font:11px ui-monospace,monospace}section{min-width:0}.notice{padding:12px;background:#fff;border:1px solid #ccc;margin-bottom:12px;line-height:1.55}button{background:#222;color:#fff;padding:7px 14px;border:0;border-radius:5px;cursor:pointer}#info{font-family:ui-monospace,monospace;font-size:12px;line-height:2;overflow-wrap:anywhere}@media(max-width:750px){main{grid-template-columns:minmax(250px,480px);padding:12px;gap:14px}}</style>
-<header><div><h1>YBX / QEMU 11.1.2 · X4 Pro</h1><small>eink-qemu 0.9.2 • experimental • original firmware</small></div><button onclick="refresh()">Refresh</button></header>
-<main><section><img id="screen" width="480" height="800" alt="X4 Pro native QEMU screen"><div id="info">Connecting to QMP…</div></section><section><div class="notice"><b>Isolated research environment.</b><div>Click the display to send a genuine GT911 touch. The production 8784, its firmware and saved SD are untouched. Native Wi-Fi MAC/NAT is available only inside this experimental QEMU.</div></div><h2>Firmware UART</h2><pre id="uart">Loading…</pre></section></main>
+<header><div><h1>YBX / QEMU 11.1.2 · X4 Pro</h1><small>eink-qemu 0.9.2 • experimental • original firmware</small></div><div><button onclick="restartGuest()">Power / Restart</button> <button onclick="refresh()">Refresh</button></div></header>
+<main><section><img id="screen" width="480" height="800" alt="X4 Pro native QEMU screen"><div id="info">Connecting to QMP…</div></section><section><div class="notice"><b>Isolated research environment.</b><div>Tap to send a real GT911 touch. This QEMU cannot emulate the X4 Pro GPIO3 power-button wake yet. Power / Restart performs a virtual chip reset (cold boot), preserving this guest&#39;s writable flash and SD. It is <b>not</b> a validated deep-sleep wakeup. The production 8784 remains untouched.</div></div><h2>Firmware UART</h2><pre id="uart">Loading…</pre></section></main>
 <script>
 let busy=false,seq=0;const panel=document.querySelector('#screen');
+async function restartGuest(){
+  const confirmed=confirm('Restart virtual X4 Pro CPU? Flash and SD persist. This is a cold boot, not a hardware power-button wake.');
+  if(!confirmed)return;
+  try {
+    const response=await fetch('/api/power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'restart'})});
+    const data=await response.json();if(!response.ok)throw Error(data.error||response.status);
+    document.querySelector('#info').textContent='Virtual CPU restart requested (cold boot).';
+    setTimeout(refresh,900);
+  } catch(error) {document.querySelector('#info').textContent=String(error)}
+}
 async function refresh(){if(busy)return;busy=true;try{let [state,log]=await Promise.all([fetch('/api/state'),fetch('/api/uart?tail=5000')]);let s=await state.json(),l=await log.json();if(!state.ok)throw Error(s.error);document.querySelector('#info').textContent=`QMP: ${s.qmp_status} · boot: ${s.home_log_observed?'Home reached':'waiting'} · ${s.frame_sha256?.slice(0,16)||'no frame'}`;document.querySelector('#uart').textContent=l.tail;panel.src='/screen.png?v='+(++seq)}catch(e){document.querySelector('#info').textContent='Error: '+e.message}finally{busy=false}}
 panel.addEventListener('click',async e=>{let r=panel.getBoundingClientRect(),x=Math.min(479,Math.max(0,Math.floor((e.clientX-r.left)*480/r.width))),y=Math.min(799,Math.max(0,Math.floor((e.clientY-r.top)*800/r.height)));try{let res=await fetch('/api/tap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,duration_ms:170})});if(!res.ok)throw Error(await res.text());setTimeout(refresh,600)}catch(err){document.querySelector('#info').textContent=err.message}});
 refresh();setInterval(refresh,3000);
@@ -129,6 +139,44 @@ class Backend:
         tail = (self.workdir / 'uart.log').read_bytes()[-max_bytes:]
         return tail.decode('utf-8', errors='replace')
 
+    def restart_guest(self, timeout=5.0):
+        """Recover suspended research guest without deleting persisted flash/SD.
+
+        QEMU 11.1.2 does not implement the native board button / RTC EXT1 wake.
+        system_wakeup fails from suspended state; system_reset is a COLD BOOT.
+        Never misreport it as true hardware wakeup.
+
+        A reset of an already running guest resumes it without stopping in
+        prelaunch, so that case must not be reported as a timeout.
+        """
+        self.qmp.call('system_reset')
+        deadline = time.monotonic() + timeout
+        needs_cont = False
+        while time.monotonic() < deadline:
+            st = self.qmp.call('query-status')
+            if st.get('status') == 'prelaunch':
+                needs_cont = True
+                break
+            if st.get('running') and st.get('status') == 'running':
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError('Timed out waiting for guest to enter prelaunch or running after system_reset')
+
+        if needs_cont:
+            self.qmp.call('cont')
+
+            while time.monotonic() < deadline:
+                st = self.qmp.call('query-status')
+                if st.get('running') and st.get('status') == 'running':
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError('Timed out waiting for guest to resume after cont')
+
+        return {'accepted': True, 'operation': 'cold-boot-reset',
+                'hardware_power_button_wake': False}
+
     def state(self):
         status = self.qmp.call('query-status')
         log = self.uart(30000)
@@ -142,8 +190,8 @@ class Backend:
                 'experimental': True}
 
 
-def serve(backend, host='127.0.0.1', port=8810):
-    require_loopback(host, port)
+def make_handler(backend):
+    """Create HTTP request handler for the QEMU 11 preview bridge."""
     class Handler(BaseHTTPRequestHandler):
         def respond(self, status, data, mime='application/json'):
             self.send_response(status)
@@ -170,14 +218,29 @@ def serve(backend, host='127.0.0.1', port=8810):
                 self.respond(503, json.dumps({'error': str(e)}).encode())
 
         def do_POST(self):
-            if self.path != '/api/tap':
+            if self.path not in ('/api/tap', '/api/power'):
                 self.respond(404, b'{"error":"not found"}')
                 return
             try:
                 size = int(self.headers.get('Content-Length', '0'))
                 if not 0 < size <= 512:
                     raise ValueError('invalid request size')
-                data = json.loads(self.rfile.read(size))
+                body = self.rfile.read(size)
+                if self.path == '/api/power':
+                    allowed = {f'http://127.0.0.1:{self.server.server_port}',
+                               f'http://localhost:{self.server.server_port}'}
+                    if self.headers.get('Origin') not in allowed:
+                        self.respond(403, b'{"error":"origin not allowed"}')
+                        return
+                    if self.headers.get_content_type() != 'application/json':
+                        self.respond(415, b'{"error":"application/json required"}')
+                        return
+                data = json.loads(body)
+                if self.path == '/api/power':
+                    if data != {'action': 'restart'}:
+                        raise ValueError('only explicit restart supported')
+                    self.respond(200, json.dumps(backend.restart_guest()).encode())
+                    return
                 if type(data.get('x')) is not int or type(data.get('y')) is not int:
                     raise ValueError('coordinates must be integers')
                 duration = data.get('duration_ms', 170)
@@ -190,6 +253,12 @@ def serve(backend, host='127.0.0.1', port=8810):
             except Exception as e:
                 self.respond(503, json.dumps({'error': str(e)}).encode())
 
+    return Handler
+
+
+def serve(backend, host='127.0.0.1', port=8810):
+    require_loopback(host, port)
+    Handler = make_handler(backend)
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f'Native eink-qemu 11.1.2 preview: http://{host}:{port}/', flush=True)
     httpd.serve_forever()
